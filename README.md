@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.7.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.8.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -48,6 +48,7 @@ The plugin does three things:
 | 🎛️ **A real panel** | A **记忆** tab in the conversation ring and a page under Settings → Plugins: the blocks currently injected (label, scope, characters against their stored limit, text), the read budget and cache age, the extraction knobs, sessions with a watermark, and the last five extraction outcomes — plus a **立即重读** button that ignores the 30 s render TTL |
 | ✏️ **Editable core blocks** | 编辑 / 删除 on any block, and a form to create one. A write is an upsert keyed by `(scope_type, scope_id, label)`, it drops the render cache so the next step already sees it, and `panel.writes: false` turns the whole thing read-only |
 | 🔎 **Browse what is stored** | A second view searches the `memories` table by substring with type/scope filters and paging, showing type, scope, age and the id (one click to copy, so a tool call can act on it). It is a **browse**, not retrieval — semantic recall stays with the model's `memory_search` — and it never selects the embedding blob |
+| 🧾 **Trace and review** | Every extraction records **which memories it produced**, so a window links to its rows ("看这 2 条产出"). Each row can open its provenance — MemVault's own audit trail (`history`: ADD/UPDATE/DELETE with old and new text) and the contradictions it takes part in (`relations`) — and can be **marked for review**. Flags are plugin state: the store is never touched |
 | 🖥️ **Host half needs no browser** | The panel is optional: `webServer` is taken with `ctx.inject`, so a headless composition still injects memory and simply never registers the routes |
 | 🛟 **Fail-soft by design** | An unreadable store serves the last good text and warns once; a broken extraction never fails a turn and never poisons the next one |
 | 🔍 **Observable from outside** | Watermarks and the last five extraction diagnostics are written atomically to one JSON file, so "hook never fired" is distinguishable from "turn too short" from "ran and found nothing" |
@@ -155,7 +156,9 @@ The browser half has no knobs of its own; it reads the two routes the host half 
 | `/memvault/api/refresh` | `POST` | The same payload after dropping the render TTL — the 立即重读 button |
 | `/memvault/api/blocks` | `POST` | One block action through MemVault's CLI: `{ action: 'set', type, id, label, value, limit? }` (upsert) or `{ action: 'delete', type, id, label }` |
 | `/memvault/api/flush` | `POST` | Extract every pending window now (the 立即抽取 button). The answer says how many sessions were handed over; the work stays queued. Answers 405 when extraction is disabled |
-| `/memvault/api/memories` | `GET` | Browse stored memories: `q` (substring), `type`, `user`, `agent`, `run`, `limit` (default 20, capped at 200), `offset`. Answers `{ rows, total, limit, offset, order, applied, mode }` — `applied` echoes what was actually used, and `mode: 'substring'` says out loud that this is not ranked retrieval |
+| `/memvault/api/memories` | `GET` | Browse stored memories: `q` (substring), `type`, `user`, `agent`, `run`, `ids` (an explicit id list, how a diagnostic's output is looked up), `flagged=1` (only marked rows), `limit` (default 20, capped at 200), `offset`. Answers `{ rows, total, limit, offset, order, applied, mode, flags, flaggedCount }` — `applied` echoes what was actually used, and `mode: 'substring'` says out loud that this is not ranked retrieval |
+| `/memvault/api/memory` | `GET` | One memory's provenance (`?id=`): the row, `history` (every audited decision with old/new text) and `relations` (the contradictions, with the other side's text and weight). 404 for an unknown id, `missing: true` in the body |
+| `/memvault/api/flag` | `POST` | Mark or clear one memory for review: `{ id, flagged: true \| false, note? }`. Writes the plugin's **own state file** — MemVault is untouched — and answers with the whole bounded flag map. 403 when `panel.writes: false` |
 
 The handlers refuse anything that is not a loopback `Host` with a matching `Origin` (when the browser sends one) and a same-site `Sec-Fetch-Site`, answering 403 otherwise. They are `exact` routes, so they match before the shell's index/`/api` handlers. A bad action, an unknown scope type, an empty value or an over-long value is a 400 before anything is spawned; a CLI failure is a 502.
 
@@ -300,6 +303,23 @@ read, window, panel and contract tests run. So the import is attempted once,
 DSH never hits that path; the tests do, and they verify the schema with the real
 Schemastery whenever the machine has one.
 
+**Why a review flag is plugin state rather than a memory edit.** The one thing only
+a human can supply is "this extracted fact is wrong", and recording it is useful;
+acting on it is dangerous. So a flag is a timestamped note in the plugin's own
+state file (bounded to 200, newest kept) — visible in the browse view, filterable,
+and exportable later by a refine pass — while deleting or rewriting a memory stays
+with `memory_delete` / `memory_update` / the CLI. That is what keeps the panel's
+promise ("it never modifies your memories") literally true, and it is why flagging
+is gated by the same `panel.writes` switch as block editing: read-only means
+read-only.
+
+**Why extraction records its output.** The CLI answers with every row it wrote
+(`memory._public`, embeddings removed); keeping the ids turns "ok added=2" into
+something auditable — the diagnostic links to the rows, and the panel can jump
+straight from a window to what it produced. Twenty entries at 200 characters each
+is enough to recognise a bad extraction and small enough to live in the state
+file.
+
 **Why the memory view is a substring browse.** Semantic ranking needs the embedder, and `memory_search`'s hybrid mode needs the keyword index too — that is the model's retrieval tool, and a panel that polled it would cost a retrieval per refresh. A `LIKE` over the text column is honest about being a browse: there is no index on `memories.memory`, so it is a scan, which is why the page is bounded (200 rows), the count is reported, and the payload says `mode: 'substring'`. Every value goes through a placeholder and `%`/`_` are escaped, so a query is a query and never a pattern or a statement.
 
 **Why the browse never selects `*`.** `memories.embedding` is a blob per row; MemVault's own maintenance paths use an explicit column list for exactly that reason (`storage.iter_memory_meta`). Selecting the nine columns the panel displays keeps a browse cheap no matter how large the store is — it reads 289 rows on the author's store without touching a single embedding.
@@ -319,8 +339,8 @@ Schemastery whenever the machine has one.
 
 ## 🗺️ Roadmap
 
-- **Extraction quality feedback** — the panel already shows what each window produced and what the store now holds; the next step is letting it flag a bad extraction back into MemVault.
-- **Deep links between the two views** — from a stored memory back to the window that extracted it (the diagnostics hold the timestamp, not yet the ids).
+- **Acting on the review list** — flags are recorded and filterable; the next step is a refine/replay pass that uses them (re-extract a window with different knobs, or hand the flagged ids to the model with the original transcript).
+- **Deep links in the other direction** — from a stored memory back to the window that produced it (the diagnostic holds the ids now, not yet the reverse index).
 
 ## 📄 License
 

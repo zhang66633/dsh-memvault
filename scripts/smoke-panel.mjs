@@ -24,9 +24,11 @@ import { createContext, runInContext } from 'node:vm'
 import {
   BLOCKS_PATH,
   BLOCK_VALUE_CLAMP,
+  FLAG_PATH,
   FLUSH_PATH,
   MAX_BODY_BYTES,
   MEMORIES_PATH,
+  MEMORY_PATH,
   REFRESH_PATH,
   STATUS_PATH,
   buildStatus,
@@ -36,12 +38,16 @@ import {
 } from '../lib/panel.js'
 import {
   DEFAULT_LIMIT,
+  MAX_IDS,
   MAX_LIMIT,
   MEMORY_TEXT_CLAMP,
   buildMemoryQuery,
   readMemories,
+  readMemoryProvenance,
   shapeMemoryRow,
 } from '../lib/memories.js'
+import { MAX_FLAGS, NOTE_CLAMP, flaggedIds, normalizeFlags, setFlag } from '../lib/flags.js'
+import { PRODUCED_TEXT_CLAMP, shapeProduced } from '../lib/extract.js'
 import {
   BLOCK_LABEL_MAX,
   BLOCK_VALUE_MAX,
@@ -232,6 +238,43 @@ check('a missing host is refused', !isTrustedRequest({}))
     && shapeMemoryRow({ id: 'm1', memory: 'x'.repeat(MEMORY_TEXT_CLAMP + 50) }).memory.length === MEMORY_TEXT_CLAMP + 1)
   check('broken metadata does not break the row',
     shapeMemoryRow({ id: 'm', memory: 'a', metadata: '{not json' }).metadata === null)
+
+  const byIds = buildMemoryQuery({ ids: ' a , b ,, c ' })
+  check('an id list becomes placeholders, capped',
+    byIds.sql.includes('id IN (?, ?, ?)')
+    && byIds.args.slice(0, 3).join(',') === 'a,b,c'
+    && byIds.applied.ids.join(',') === 'a,b,c',
+    byIds.sql)
+  check('an empty id list adds no clause',
+    !buildMemoryQuery({ ids: ' , ' }).sql.includes('IN (')
+    && buildMemoryQuery({ ids: ',' }).applied.ids.length === 0)
+  check('the id list is capped', buildMemoryQuery({ ids: Array.from({ length: MAX_IDS + 20 }, (_, i) => `x${i}`).join(',') }).applied.ids.length === MAX_IDS)
+}
+
+// ── review flags (plugin state, never the store) ────────────────────────────
+{
+  check('a missing map normalises to an empty one',
+    Object.keys(normalizeFlags(undefined)).length === 0 && Object.keys(normalizeFlags([])).length === 0
+    && Object.keys(normalizeFlags({ a: 'nope' })).length === 0,
+    JSON.stringify(normalizeFlags({ a: 'nope', b: { at: '2026-01-01' } })))
+
+  const marked = setFlag({}, 'mem_1', true, { note: 'x'.repeat(NOTE_CLAMP + 50), at: '2026-01-02T00:00:00.000Z' })
+  check('marking stores a clamped note and the timestamp',
+    marked.mem_1.at === '2026-01-02T00:00:00.000Z' && marked.mem_1.note.length === NOTE_CLAMP,
+    JSON.stringify({ at: marked.mem_1.at, note: marked.mem_1.note.length }))
+  check('marking does not mutate the input', Object.keys({}).length === 0)
+
+  const cleared = setFlag(marked, 'mem_1', false)
+  check('clearing removes the mark', Object.keys(cleared).length === 0)
+  check('an empty id is ignored', Object.keys(setFlag(marked, '', true)).length === 1)
+  check('flaggedIds lists what is marked', flaggedIds(marked).join(',') === 'mem_1')
+
+  const many = Array.from({ length: MAX_FLAGS + 10 }, (_, i) => [`m${i}`, { at: new Date(2026, 0, 1, 0, 0, i).toISOString() }])
+  const capped = normalizeFlags(Object.fromEntries(many))
+  check('the flag map keeps the newest and stays bounded',
+    Object.keys(capped).length === MAX_FLAGS && !Object.hasOwn(capped, 'm0')
+    && Object.hasOwn(capped, `m${MAX_FLAGS + 9}`),
+    `${Object.keys(capped).length} flags`)
 }
 
 // ── the real thing: mount on a stub cordis ctx against a throwaway db ────────
@@ -305,9 +348,9 @@ try {
     children.length === 1 && children[0].deps.join(',') === 'webServer', JSON.stringify(children.map((c) => c.deps)))
 
   children[0].callback(childCtx)
-  check('all five exact routes are registered',
+  check('all seven exact routes are registered',
     routes.has(STATUS_PATH) && routes.has(REFRESH_PATH) && routes.has(BLOCKS_PATH)
-    && routes.has(FLUSH_PATH) && routes.has(MEMORIES_PATH),
+    && routes.has(FLUSH_PATH) && routes.has(MEMORIES_PATH) && routes.has(MEMORY_PATH) && routes.has(FLAG_PATH),
     [...routes.keys()].join(', '))
 
   const call = async (path, method = 'GET', body = null, headers = { host: '127.0.0.1:19387' }) => {
@@ -678,6 +721,95 @@ try {
     const direct = readMemories({ dbPath: windowDb, query: { q: '南京' } })
     check('the reader is usable outside the route too',
       direct.rows.length === 1 && direct.limit === DEFAULT_LIMIT, `rows=${direct.rows.length}`)
+
+    // ── provenance: how a memory became what it is ──────────────────────────
+    const target = page.body.rows[0]
+    const detail = await (async () => {
+      const out = { code: null, body: null }
+      await windowRoutes.get(MEMORY_PATH).handler(
+        { headers: { host: '127.0.0.1:19387' }, method: 'GET', url: `${MEMORY_PATH}?id=${encodeURIComponent(target.id)}` },
+        { writeHead(code) { out.code = code }, end(payload) { out.body = JSON.parse(payload) } },
+      )
+      return out
+    })()
+    check('provenance answers with the row and its audit trail',
+      detail.code === 200 && detail.body.ok === true && detail.body.memory.id === target.id
+      && Array.isArray(detail.body.history) && Array.isArray(detail.body.relations)
+      && detail.body.history.length >= 1 && detail.body.history[0].action !== undefined,
+      JSON.stringify(detail.body.history.map((h) => h.action)))
+    check('provenance never carries the embedding blob', !JSON.stringify(detail.body).includes('embedding'))
+
+    const unknown = await (async () => {
+      const out = { code: null, body: null }
+      await windowRoutes.get(MEMORY_PATH).handler(
+        { headers: { host: '127.0.0.1:19387' }, method: 'GET', url: `${MEMORY_PATH}?id=nope` },
+        { writeHead(code) { out.code = code }, end(payload) { out.body = JSON.parse(payload) } },
+      )
+      return out
+    })()
+    check('an unknown id is a 404, not a 500',
+      unknown.code === 404 && unknown.body.ok === false && unknown.body.missing === true, `code=${unknown.code}`)
+
+    // ── review flags: plugin state, never the store ─────────────────────────
+    const flagCall = async (payload, method = 'POST', headers = { host: '127.0.0.1:19387' }) => {
+      const out = { code: null, body: null }
+      await windowRoutes.get(FLAG_PATH).handler(
+        {
+          headers, method,
+          on(event, handler) {
+            if (event === 'data' && payload !== null) handler(JSON.stringify(payload))
+            if (event === 'end') handler()
+          },
+        },
+        { writeHead(code) { out.code = code }, end(body) { out.body = JSON.parse(body) } },
+      )
+      return out
+    }
+
+    const flagged = await flagCall({ id: target.id, flagged: true, note: '看起来是助手口吻' })
+    check('flagging answers with the whole bounded map',
+      flagged.code === 200 && flagged.body.flaggedCount === 1 && Object.hasOwn(flagged.body.flags, target.id)
+      && flagged.body.persisted === true,
+      JSON.stringify(flagged.body))
+    check('the flag lands in the plugin state file, not the store',
+      Object.hasOwn(loadState(windowState).flags, target.id)
+      && !JSON.stringify(readMemories({ dbPath: windowDb, query: {} })).includes('看起来是助手口吻'))
+
+    const onlyFlagged = await browse(`${MEMORIES_PATH}?flagged=1`)
+    check('the flagged filter returns exactly the marked rows',
+      onlyFlagged.body.total === 1 && onlyFlagged.body.rows[0].id === target.id
+      && onlyFlagged.body.flaggedCount === 1,
+      `total=${onlyFlagged.body.total}`)
+    check('the flag travels with every browse payload',
+      Object.hasOwn((await browse()).body.flags, target.id))
+
+    const unflagged = await flagCall({ id: target.id, flagged: false })
+    check('unflagging empties the filter',
+      unflagged.body.flaggedCount === 0 && (await browse(`${MEMORIES_PATH}?flagged=1`)).body.total === 0)
+
+    check('a bad flag body is a 400',
+      (await flagCall({ id: target.id })).code === 400 && (await flagCall({ flagged: true })).code === 400)
+    check('the flag route is POST only', (await flagCall(null, 'GET')).code === 405)
+    check('the flag route refuses an untrusted host',
+      (await flagCall({ id: target.id, flagged: true }, 'POST', { host: 'evil.example' })).code === 403)
+
+    // ── a window's diagnostic links back to what it produced ────────────────
+    const withProduced = loadState(windowState).diagnostics.filter((d) => Array.isArray(d.produced) && d.produced.length > 0)
+    check('the extraction diagnostic records the ids it produced',
+      withProduced.length === 1 && withProduced[0].produced.length === 2
+      && withProduced[0].produced.every((p) => typeof p.id === 'string' && p.text.length <= PRODUCED_TEXT_CLAMP + 1),
+      JSON.stringify(withProduced[0]?.produced?.map((p) => p.id)))
+    const producedIds = withProduced[0].produced.map((p) => p.id).join(',')
+    const fromDiagnostic = await browse(`${MEMORIES_PATH}?ids=${encodeURIComponent(producedIds)}`)
+    check('browsing by those ids returns exactly the window’s output',
+      fromDiagnostic.body.total === 2 && fromDiagnostic.body.rows.every((r) => producedIds.includes(r.id)),
+      `total=${fromDiagnostic.body.total}`)
+    check('a shaped production line is clamped and id-less rows are dropped',
+      shapeProduced([
+        { id: 'a', memory: 'x'.repeat(PRODUCED_TEXT_CLAMP + 5), memory_type: 'user' },
+        { id: null, memory: 'no id' },
+        { id: 'b', memory: 'ok' },
+      ]).length === 2)
   }
 } finally {
   rmSync(dir, { recursive: true, force: true })
