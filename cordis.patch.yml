@@ -23,6 +23,9 @@
         labels: []
         maxChars: 4000
         refreshMs: 30000
+        # 面板（浏览器半边）：writes=false 时面板只读，写核心块的路由回 403。
+        panel:
+          writes: true
         # 写入端：每 N 轮把这个回合的对话交给 MemVault（它自己做 LLM 抽取 + 向量化）。
         # 一次 = 起一个 Python 进程 + 一次真实 LLM 调用，所以有节流；0 轮即关闭。
         extract:

@@ -16,14 +16,31 @@
  * It also fails when `lib/client.js` does not match `src/client/index.js`, so a
  * stale panel cannot ship.
  */
-import { DatabaseSync } from 'node:sqlite'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createContext, runInContext } from 'node:vm'
-import { BLOCK_VALUE_MAX, REFRESH_PATH, STATUS_PATH, buildStatus, createPanelApi, isTrustedRequest } from '../lib/panel.js'
+import {
+  BLOCKS_PATH,
+  BLOCK_VALUE_CLAMP,
+  MAX_BODY_BYTES,
+  REFRESH_PATH,
+  STATUS_PATH,
+  buildStatus,
+  createPanelApi,
+  isTrustedRequest,
+  readJsonBody,
+} from '../lib/panel.js'
+import {
+  BLOCK_LABEL_MAX,
+  BLOCK_VALUE_MAX,
+  buildBlockDeleteArgs,
+  buildBlockSetArgs,
+  runBlockAction,
+  validateBlockAction,
+} from '../lib/blocks-write.js'
 import { loadState, saveWatermarks } from '../lib/extract.js'
-import { apply as applyHost, name as hostName } from '../lib/index.js'
+import { DEFAULT_EXTRACT, apply as applyHost, name as hostName } from '../lib/index.js'
 import { wrapClientBundle } from './build-client.mjs'
 
 const failures = []
@@ -51,7 +68,7 @@ check('a missing host is refused', !isTrustedRequest({}))
   })
   check('scopes are flattened for display', payload.read.scopes[0] === 'user/lenovo')
   check('a long block keeps its true length but ships a clamped value',
-    payload.blocks[0].chars === 3000 && payload.blocks[0].value.length === BLOCK_VALUE_MAX + 1,
+    payload.blocks[0].chars === 3000 && payload.blocks[0].value.length === BLOCK_VALUE_CLAMP + 1,
     `chars=${payload.blocks[0].chars} shipped=${payload.blocks[0].value.length}`)
   check('an empty snapshot still has both halves', !!payload.read && !!payload.extract)
 }
@@ -99,23 +116,89 @@ check('a missing host is refused', !isTrustedRequest({}))
     failed.out.code === 500 && failed.out.body.error === 'nope')
 }
 
+// ── block-write validation and argv ─────────────────────────────────────────
+{
+  const base = { action: 'set', type: 'user', id: 'lenovo', label: 'persona', value: '喜欢结论先行' }
+  check('a well-formed set passes', validateBlockAction(base).ok === true)
+  check('delete passes without a value', validateBlockAction({ ...base, action: 'delete', value: undefined }).ok === true)
+  check('an unknown action is refused', !validateBlockAction({ ...base, action: 'append' }).ok)
+  check('an unknown scope type is refused', !validateBlockAction({ ...base, type: 'run' }).ok)
+  check('a missing label is refused', !validateBlockAction({ ...base, label: '  ' }).ok)
+  check('a multi-line label is refused', !validateBlockAction({ ...base, label: 'a\nb' }).ok)
+  check('an over-long label is refused',
+    !validateBlockAction({ ...base, label: 'x'.repeat(BLOCK_LABEL_MAX + 1) }).ok)
+  check('an empty value is refused on set', !validateBlockAction({ ...base, value: '   ' }).ok)
+  check('an over-long value is refused',
+    !validateBlockAction({ ...base, value: 'x'.repeat(BLOCK_VALUE_MAX + 1) }).ok)
+  check('a value on delete is refused', !validateBlockAction({ ...base, action: 'delete', value: 'x' }).ok)
+  check('a non-integer limit is refused', !validateBlockAction({ ...base, limit: '2.5' }).ok)
+  check('a valid limit is kept', validateBlockAction({ ...base, limit: 500 }).limit === 500)
+
+  const setArgs = buildBlockSetArgs(validateBlockAction({ ...base, limit: 500 }))
+  check('blocks-set argv puts the limit before `--` and the positionals after it',
+    setArgs.join(' ') === 'blocks-set --type user --id lenovo --limit 500 -- persona 喜欢结论先行',
+    setArgs.join(' '))
+  const dashArgs = buildBlockSetArgs(validateBlockAction({ ...base, value: '--not-a-flag' }))
+  check('a value that looks like an option stays data (`--` separator)',
+    dashArgs.join(' ') === 'blocks-set --type user --id lenovo -- persona --not-a-flag',
+    dashArgs.join(' '))
+  check('blocks-delete argv needs no value',
+    buildBlockDeleteArgs(validateBlockAction({ ...base, action: 'delete', value: undefined })).join(' ')
+    === 'blocks-delete --type user --id lenovo -- persona')
+}
+
+// ── bounded JSON body reading ───────────────────────────────────────────────
+{
+  const streamOf = (chunks) => ({
+    destroyed: false,
+    on(event, handler) {
+      if (event === 'data') for (const c of chunks) handler(c)
+      if (event === 'end') handler()
+    },
+    destroy() { this.destroyed = true },
+  })
+  check('a JSON object body parses',
+    (await readJsonBody(streamOf(['{"action":"set"}']))).body.action === 'set')
+  check('an empty body is an empty object',
+    JSON.stringify((await readJsonBody(streamOf([]))).body) === '{}')
+  check('a JSON array is refused as a non-object',
+    typeof (await readJsonBody(streamOf(['[1,2]']))).error === 'string')
+  check('a malformed body yields an error, not a throw',
+    typeof (await readJsonBody(streamOf(['{oops']))).error === 'string')
+  const big = await readJsonBody(streamOf(['x'.repeat(MAX_BODY_BYTES + 10)]))
+  check('an over-sized body is flagged and the stream destroyed', big.tooLarge === true)
+  check('a request with no stream still answers an object',
+    JSON.stringify((await readJsonBody({})).body) === '{}')
+  const res = { code: null, body: null }
+  await createPanelApi({ status: () => ({}), refresh: () => ({}), writeBlock: async () => ({ ok: false, status: 400, error: 'bad' }) })
+    .blocks({ headers: { host: '127.0.0.1:19387' }, method: 'POST' },
+      { writeHead(code) { res.code = code }, end(p) { res.body = JSON.parse(p) } })
+  check('a rejected write reaches the caller with its status',
+    res.code === 400 && res.body.ok === false, `code=${res.code}`)
+}
+
 // ── the real thing: mount on a stub cordis ctx against a throwaway db ────────
 const dir = mkdtempSync(join(tmpdir(), 'dsh-memvault-panel-'))
 try {
   const dbPath = join(dir, 'panel.db')
   const statePath = join(dir, 'state.json')
 
-  const seed = (rows) => {
-    const db = new DatabaseSync(dbPath)
-    db.exec('CREATE TABLE IF NOT EXISTS blocks (scope_type TEXT, scope_id TEXT, label TEXT, value TEXT, position INTEGER)')
-    for (const r of rows) db.prepare('INSERT INTO blocks (scope_type, scope_id, label, value, position) VALUES (?,?,?,?,?)')
-      .run(r.scopeType, r.scopeId, r.label, r.value, r.position ?? 0)
-    db.close()
+  // Seed through the CLI rather than by hand: the temp database then has the
+  // schema MemVault itself creates, and MEMVAULT_DB_PATH overriding the project
+  // .env is exercised before anything reads.
+  const cliConfig = {
+    pythonPath: DEFAULT_EXTRACT.pythonPath,
+    projectDir: DEFAULT_EXTRACT.projectDir,
+    env: { ...DEFAULT_EXTRACT.env, MEMVAULT_DB_PATH: dbPath },
+    timeoutMs: 120000,
   }
-  seed([
-    { scopeType: 'user', scopeId: 'lenovo', label: 'human', value: '名字是哲。', position: 0 },
-    { scopeType: 'agent', scopeId: 'claude-code-memory', label: 'role', value: '名字是余。', position: 0 },
-  ])
+  const setViaCli = (input) => runBlockAction({ config: cliConfig, input })
+  const seeded = await setViaCli({ action: 'set', type: 'user', id: 'lenovo', label: 'human', value: '名字是哲。' })
+  const seededAgent = await setViaCli({ action: 'set', type: 'agent', id: 'claude-code-memory', label: 'role', value: '名字是余。' })
+  check('the CLI creates the store and writes a block',
+    seeded.ok === true && seededAgent.ok === true,
+    seeded.ok ? 'ok' : String(seeded.error).slice(0, 80))
+
   saveWatermarks(new Map([['sess-a', 10], ['sess-b', 20]]), statePath, [
     { at: '2026-09-28T10:00:00.000Z', seq: 10, transcriptChars: 120, outcome: 'ok added=1' },
   ])
@@ -142,7 +225,14 @@ try {
   applyHost(ctx, {
     dbPath,
     scopes: [{ type: 'user', id: 'lenovo' }, { type: 'agent', id: 'claude-code-memory' }],
-    extract: { enabled: true, everyNTurns: 3, statePath },
+    // The plugin's write route must reach the same throwaway store, so it
+    // inherits pythonPath/projectDir/env from the extract config.
+    extract: {
+      enabled: true, everyNTurns: 3, statePath,
+      pythonPath: DEFAULT_EXTRACT.pythonPath,
+      projectDir: DEFAULT_EXTRACT.projectDir,
+      env: cliConfig.env,
+    },
   })
 
   check('plugin name matches the package', hostName === 'dsh-memvault', hostName)
@@ -158,13 +248,21 @@ try {
     children.length === 1 && children[0].deps.join(',') === 'webServer', JSON.stringify(children.map((c) => c.deps)))
 
   children[0].callback(childCtx)
-  check('both exact routes are registered',
-    routes.has(STATUS_PATH) && routes.has(REFRESH_PATH), [...routes.keys()].join(', '))
+  check('all three exact routes are registered',
+    routes.has(STATUS_PATH) && routes.has(REFRESH_PATH) && routes.has(BLOCKS_PATH), [...routes.keys()].join(', '))
 
-  const call = async (path, method = 'GET') => {
+  const call = async (path, method = 'GET', body = null, headers = { host: '127.0.0.1:19387' }) => {
     const out = { code: null, body: null }
-    const res = { writeHead(code) { out.code = code }, end(body) { out.body = JSON.parse(body) } }
-    await routes.get(path).handler({ headers: { host: '127.0.0.1:19387' }, method }, res)
+    const res = { writeHead(code) { out.code = code }, end(payload) { out.body = JSON.parse(payload) } }
+    // A minimal readable stream, which is what `readJsonBody` consumes.
+    const req = {
+      headers, method,
+      on(event, handler) {
+        if (event === 'data' && body !== null) handler(typeof body === 'string' ? body : JSON.stringify(body))
+        if (event === 'end') handler()
+      },
+    }
+    await routes.get(path).handler(req, res)
     return out
   }
 
@@ -174,15 +272,20 @@ try {
     `blocks=${first.body.read.blockCount}`)
   check('the payload carries the blocks the prompt got',
     first.body.blocks.map((b) => `${b.scope}/${b.label}`).join(',') === 'user/lenovo/human,agent/claude-code-memory/role')
+  check('each block carries its stored value_limit',
+    first.body.blocks.every((b) => Number.isInteger(b.limit) && b.limit > 0),
+    first.body.blocks.map((b) => b.limit).join(','))
   check('extraction state is reported, including persisted diagnostics',
     first.body.extract.sessions === 2 && first.body.extract.diagnostics[0].outcome === 'ok added=1'
     && first.body.extract.everyNTurns === 3,
     `sessions=${first.body.extract.sessions} diag=${first.body.extract.diagnostics.length}`)
   check('the read half reports its budget and TTL',
     first.body.read.maxChars === 4000 && first.body.read.refreshMs === 30000)
+  check('the payload says the panel may write', first.body.writable === true)
 
   // A row written now must NOT appear while the render TTL is warm …
-  seed([{ scopeType: 'user', scopeId: 'lenovo', label: 'persona', value: '协作风格：简练。', position: 1 }])
+  const wrote = await setViaCli({ action: 'set', type: 'user', id: 'lenovo', label: 'persona', value: '协作风格：简练。' })
+  check('the CLI upserts a block into the same store', wrote.ok === true, String(wrote.error ?? '').slice(0, 60))
   const warm = await call(STATUS_PATH)
   check('a warm TTL serves the cached render', warm.body.read.blockCount === 2, `blocks=${warm.body.read.blockCount}`)
 
@@ -193,6 +296,86 @@ try {
     `blocks=${forced.body.read.blockCount}`)
   check('the refreshed text is what the prompt will inject next',
     contexts[0].text().includes('[user/lenovo/persona]'))
+
+  // ── the write route, end to end ────────────────────────────────────────────
+  const untrustedWrite = await call(BLOCKS_PATH, 'POST', { action: 'set' }, { host: 'evil.example' })
+  check('the write route refuses an untrusted host', untrustedWrite.code === 403, `code=${untrustedWrite.code}`)
+
+  const wrongVerb = await call(BLOCKS_PATH, 'GET')
+  check('the write route is POST only', wrongVerb.code === 405, `code=${wrongVerb.code}`)
+
+  const badAction = await call(BLOCKS_PATH, 'POST', { action: 'nuke', type: 'user', id: 'lenovo', label: 'x' })
+  check('a bad action is a 400, not a write', badAction.code === 400 && /action must be/.test(badAction.body.error),
+    badAction.body.error)
+
+  const emptyValue = await call(BLOCKS_PATH, 'POST', { action: 'set', type: 'user', id: 'lenovo', label: 'empty', value: '   ' })
+  check('an empty value is refused (the reader would skip it)',
+    emptyValue.code === 400 && /value is required/.test(emptyValue.body.error), emptyValue.body.error)
+
+  const notJson = await call(BLOCKS_PATH, 'POST', '{not json')
+  check('an unparsable body is a 400', notJson.code === 400 && /not valid JSON/.test(notJson.body.error), notJson.body.error)
+
+  const beforeWrite = await call(STATUS_PATH)
+  const written = await call(BLOCKS_PATH, 'POST', {
+    action: 'set', type: 'user', id: 'lenovo', label: 'panel-made', value: '由面板写入的块。',
+  })
+  check('the write route writes through the CLI',
+    written.code === 200 && written.body.ok === true && written.body.action === 'set', JSON.stringify(written.body).slice(0, 90))
+
+  const afterWrite = await call(STATUS_PATH)
+  check('a write invalidates the render, so the very next status sees it',
+    beforeWrite.body.read.blockCount === 3 && afterWrite.body.read.blockCount === 4
+    && afterWrite.body.blocks.some((b) => b.label === 'panel-made'),
+    `${beforeWrite.body.read.blockCount} -> ${afterWrite.body.read.blockCount}`)
+  check('the prompt text carries the block the panel just wrote',
+    contexts[0].text().includes('[user/lenovo/panel-made]'))
+
+  const edited = await call(BLOCKS_PATH, 'POST', {
+    action: 'set', type: 'user', id: 'lenovo', label: 'panel-made', value: '改过一次。',
+  })
+  const afterEdit = await call(STATUS_PATH)
+  check('the same label is an upsert, not a second block',
+    edited.code === 200 && afterEdit.body.read.blockCount === 4
+    && afterEdit.body.blocks.find((b) => b.label === 'panel-made').value === '改过一次。',
+    `blocks=${afterEdit.body.read.blockCount}`)
+
+  const deleted = await call(BLOCKS_PATH, 'POST', {
+    action: 'delete', type: 'user', id: 'lenovo', label: 'panel-made',
+  })
+  const afterDelete = await call(STATUS_PATH)
+  check('the delete action removes the block',
+    deleted.code === 200 && afterDelete.body.read.blockCount === 3
+    && !afterDelete.body.blocks.some((b) => b.label === 'panel-made'),
+    `blocks=${afterDelete.body.read.blockCount}`)
+
+  const deleteWithValue = await call(BLOCKS_PATH, 'POST', {
+    action: 'delete', type: 'user', id: 'lenovo', label: 'persona', value: 'x',
+  })
+  check('delete refuses a value', deleteWithValue.code === 400, deleteWithValue.body.error)
+
+  // A read-only panel: the plugin keeps `writeBlock: null`, so the route 403s.
+  const readOnlyChildren = []
+  applyHost({ ...ctx, inject: (deps, cb) => readOnlyChildren.push({ deps, cb }) }, {
+    dbPath, panel: { writes: false }, extract: { enabled: false, statePath },
+  })
+  const readOnlyRoutes = new Map()
+  readOnlyChildren[0].cb({
+    effect: (fn) => fn(),
+    webServer: { register: (r) => { readOnlyRoutes.set(r.path, r); return () => {} } },
+  })
+  const readOnlyRes = { code: null, body: null }
+  await readOnlyRoutes.get(BLOCKS_PATH).handler(
+    { headers: { host: '127.0.0.1:19387' }, method: 'POST', on(event, handler) { if (event === 'end') handler() } },
+    { writeHead(code) { readOnlyRes.code = code }, end(payload) { readOnlyRes.body = JSON.parse(payload) } },
+  )
+  check('panel.writes:false makes the write route answer 403',
+    readOnlyRes.code === 403 && /disabled/.test(readOnlyRes.body.error), readOnlyRes.body.error)
+  const readOnlyStatus = { code: null, body: null }
+  await readOnlyRoutes.get(STATUS_PATH).handler(
+    { headers: { host: '127.0.0.1:19387' }, method: 'GET' },
+    { writeHead(code) { readOnlyStatus.code = code }, end(payload) { readOnlyStatus.body = JSON.parse(payload) } },
+  )
+  check('the status payload tells the panel it is read-only', readOnlyStatus.body.writable === false)
 
   // A broken store degrades, it does not throw.
   const brokenCtx = { ...ctx, systemPrompt: { context(spec) { contexts.push(spec); return () => {} } } }

@@ -154,6 +154,33 @@ npm test   # smoke:package + smoke + smoke:extract 三套全绿
 
 ---
 
+### 7.5 面板变成可写（0.4.0）
+
+需求：光看不够，得能在面板里改核心块。写入路径的选择沿用同样的推理，先读源码确认语义：
+
+| 结论 | 出处 |
+|---|---|
+| `blocks-set --type {user\|agent} --id <scope> <label> [value] [--limit N]` → `core_append`；`blocks-delete ...` → `core_delete` | `memvault/cli.py`（argparse 定义 + dispatch） |
+| `core_append` 是**按 `(scope_type, scope_id, label)` 的 upsert**，label 必填，会 emit `block.updated`，`value_limit` 缺省取 `config.default_block_limit` | `memvault/memory.py` |
+| `upsert_block` 是 UPDATE/INSERT，**不按 value_limit 截断**（它是建议值），块写入不触发向量化 | `memvault/storage.py` |
+
+取舍：
+
+- **仍然走 CLI，不直写库、也不走 REST。** 块写入没有 LLM 与向量化，但仍然必须经过 `core_append`（upsert 语义 + `block.updated` 事件 + value_limit）。直写等于把这三样都跳过；REST 又要求 FastAPI 常驻。
+- **多两条比 MemVault 更严的校验**，都是「否则会静默无事发生」的失败：空值（读取器跳过空块）与超 8000 字符（argv 长度是真限制，值是 argv 位置参数）。
+- **`--` 分隔符**：`blocks-set` 的 label/value 是位置参数，值以 `-` 开头时会被 argparse 当选项；位置参数前插 `--` 就不会。
+- **写完立刻把渲染缓存的 `at` 置 0**，否则用户会看到「刚保存的块没进提示词」（30 秒 TTL）。
+- **`panel.writes: false`** 让整条写路由回 403，面板自己切换成只读样式。
+
+验证（新增/扩展，均在 `smoke-panel.mjs`）：校验 12 条、argv 3 条（含 `--not-a-flag`）、受长度限制的 body 读取 6 条、路由 403/405/400/413/200 五条，以及**对临时库的真实 CLI 写入闭环**：建块 → 热 TTL 仍是旧的 → `POST /refresh` 看到新块 → 注入文本包含它 → 同 label 再写仍是 upsert（块数不变、值变了）→ 删除后消失。
+
+新踩的坑（本轮）：
+
+16. **同名常量在不同模块里含义不同，会让测试「假过」。** `panel.js` 的 `BLOCK_VALUE_MAX`（发给浏览器的裁剪长度 2000）与 `blocks-write.js` 的 `BLOCK_VALUE_MAX`（写入上限 8000）同名；测试里导错了那个，断言用 2001 字符去撞 8000 的上限，于是「超长值被拒」这条**应该失败却通过了**（实际是没触发）。改名为 `BLOCK_VALUE_CLAMP` / `BLOCK_VALUE_MAX` 后才真正咬住。*教训*：跨模块常量的名字要带意图（clamp vs max），测试里宁可显式写数字并加注释。
+17. **`readJsonBody` 要显式拒绝数组。** `typeof [] === 'object'`，最初的非空对象判断放过了 JSON 数组；路由契约是「body 必须是一个对象」，所以判断落在 `Array.isArray` 上。
+
+---
+
 ## 8. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
 
 要「优先参考源码」时，DSH 的包都在 `app.asar` 这个打包文件里，asar 只是「JSON 头 + 拼接的文件数据」：

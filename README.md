@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.3.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.4.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -29,7 +29,7 @@ The plugin does three things:
 |---|---|---|
 | **Inject** (read) | Core memory blocks enter the system prompt, visible on **every** step without the model calling a tool | `ctx.systemPrompt.context()` — a dynamic runtime-context contribution (the same channel as `skill-catalog`) |
 | **Extract** (write) | Every *N*th finished turn, the turn's transcript is handed to MemVault's extraction/embedding pipeline | `ctx.on('session/event')` → `turn/end` → `python -m memvault.cli add --stdin` |
-| **Show** (panel) | What is injected right now, and what extraction has been doing, in the GUI | two exact host routes (`/memvault/api/*`) + a browser half rendered as a conversation tab and a Plugins settings page |
+| **Show** (panel) | What is injected right now, what extraction has been doing, and **editing the core blocks themselves** | three exact host routes (`/memvault/api/*`) + a browser half rendered as a conversation tab and a Plugins settings page |
 
 ## ✨ Features
 
@@ -42,7 +42,8 @@ The plugin does three things:
 | ⏱️ **Cost-aware extraction** | `everyNTurns` throttles the Python process, `minTranscriptChars` skips trivia, `endReasons` decides which turn endings count, `timeoutMs` kills a stuck child |
 | 🎭 **Role filtering** | Assistant prose and tool traffic are excluded by default — shipping them stored the model's own words as "facts about the user" |
 | 🪶 **Zero runtime dependencies** | Plain ESM over the harness plugin protocol: `node:sqlite`, `node:child_process`, `node:fs`. Nothing to install, and the browser half is hand-written against the ModuleLoader envelope instead of being bundled |
-| 🎛️ **A real panel** | A **记忆** tab in the conversation ring and a page under Settings → Plugins: the blocks currently injected (label, scope, characters, text), the read budget and cache age, the extraction knobs, sessions with a watermark, and the last five extraction outcomes — plus a **立即重读** button that ignores the 30 s render TTL |
+| 🎛️ **A real panel** | A **记忆** tab in the conversation ring and a page under Settings → Plugins: the blocks currently injected (label, scope, characters against their stored limit, text), the read budget and cache age, the extraction knobs, sessions with a watermark, and the last five extraction outcomes — plus a **立即重读** button that ignores the 30 s render TTL |
+| ✏️ **Editable core blocks** | 编辑 / 删除 on any block, and a form to create one. A write is an upsert keyed by `(scope_type, scope_id, label)`, it drops the render cache so the next step already sees it, and `panel.writes: false` turns the whole thing read-only |
 | 🖥️ **Host half needs no browser** | The panel is optional: `webServer` is taken with `ctx.inject`, so a headless composition still injects memory and simply never registers the routes |
 | 🛟 **Fail-soft by design** | An unreadable store serves the last good text and warns once; a broken extraction never fails a turn and never poisons the next one |
 | 🔍 **Observable from outside** | Watermarks and the last five extraction diagnostics are written atomically to one JSON file, so "hook never fired" is distinguishable from "turn too short" from "ran and found nothing" |
@@ -135,10 +136,17 @@ The browser half has no knobs of its own; it reads the two routes the host half 
 
 | Route | Method | Answers |
 |---|---|---|
-| `/memvault/api/status` | `GET` | Injected blocks (label, scope, characters, value clamped to 2000), read config, cache age, extraction config, watermark session count, last five diagnostics |
+| `/memvault/api/status` | `GET` | Injected blocks (label, scope, characters, stored limit, value clamped to 2000), read config, cache age, extraction config, watermark session count, last five diagnostics, and whether writes are enabled |
 | `/memvault/api/refresh` | `POST` | The same payload after dropping the render TTL — the 立即重读 button |
+| `/memvault/api/blocks` | `POST` | One block action through MemVault's CLI: `{ action: 'set', type, id, label, value, limit? }` (upsert) or `{ action: 'delete', type, id, label }` |
 
-Both handlers refuse anything that is not a loopback `Host` with a matching `Origin` (when the browser sends one) and a same-site `Sec-Fetch-Site`, answering 403 otherwise. They are `exact` routes, so they match before the shell's index/`/api` handlers.
+The handlers refuse anything that is not a loopback `Host` with a matching `Origin` (when the browser sends one) and a same-site `Sec-Fetch-Site`, answering 403 otherwise. They are `exact` routes, so they match before the shell's index/`/api` handlers. A bad action, an unknown scope type, an empty value or an over-long value is a 400 before anything is spawned; a CLI failure is a 502.
+
+### Panel
+
+| Field | Default | Meaning |
+|---|---|---|
+| `panel.writes` | `true` | `false` makes the panel read-only: `/memvault/api/blocks` answers 403 instead of running the CLI |
 
 ## 🏗️ How it works
 
@@ -208,7 +216,7 @@ npm run smoke:extract # transcript, boundary slicing, event buffer, watermarks, 
 npm run smoke:panel   # mounts the plugin on a stub context, drives both routes against a throwaway db, and runs the shipped client bundle under a stub ModuleLoader
 ```
 
-`smoke:panel` is where the panel's behaviour is actually pinned down: the TTL must serve a stale render while a row written in between exists, `POST /refresh` must pick that row up, an untrusted `Host`/`Origin` must get 403, a throwing handler must become a 500 rather than reject, an unreadable store must still answer 200 with the blocks it last knew, and the shipped `lib/client.js` must equal what `src/client/index.js` builds to.
+`smoke:panel` is where the panel's behaviour is actually pinned down: the TTL must serve a stale render while a row written in between exists, `POST /refresh` must pick that row up, an untrusted `Host`/`Origin` must get 403, a throwing handler must become a 500 rather than reject, an unreadable store must still answer 200 with the blocks it last knew, and the shipped `lib/client.js` must equal what `src/client/index.js` builds to. Its write half runs **real CLI writes against a throwaway store**: the route creates a block, an upsert of the same label must not create a second one, a delete removes it, `panel.writes: false` turns the route into a 403, and a value that looks like an option (`--not-a-flag`) must survive argv parsing as data.
 
 The end-to-end step forces the offline embedder and rule extractor in a temporary database: it never touches the real store and never calls the configured gateway.
 
@@ -230,13 +238,17 @@ The end-to-end step forces the offline embedder and rule extractor in a temporar
 
 **Why the panel registers with `ctx.inject`.** `webServer` is a *wanted* service, not a required one: a headless composition has no browser to render into, and a memory bridge that stopped injecting because nothing could paint a panel would be a bug, not a safety feature. `ctx.inject(['webServer'], …)` starts a child fiber that simply waits in that case.
 
-**Why the panel routes check the caller themselves.** A route registered through `webServer` is not admitted by `dsh-client-connection` — that gate guards the index exchange and the `/api` bridge. The panel answers with the same request-trust rule the bridge documents (loopback host, matching `Origin` when present, no cross-site `Sec-Fetch-Site`) so a DNS-rebinding page cannot read the store. It is a boundary, not identity; the server still binds loopback only.
+**Why the panel routes check the caller themselves.** A route registered through `webServer` is not admitted by `dsh-client-connection` — that gate guards the index exchange and the `/api` bridge. The panel answers with the same request-trust rule the bridge documents (loopback host, matching `Origin` when present, no cross-site `Sec-Fetch-Site`) so a DNS-rebinding page cannot read **or write** the store. It is a boundary, not identity; the server still binds loopback only.
+
+**Why the panel writes through the CLI too.** A core block is cheap to write — no LLM call, no embedding, unlike a memory — but it still has to go through MemVault's own `core_append`, which is what owns the upsert semantics, the `block.updated` event and `value_limit`. A direct SQLite `INSERT` would skip all three. The CLI takes the value as an argv positional, so the panel caps it at 8000 characters and puts `--` before the positionals: a value of `--not-a-flag` has to stay data.
+
+**Why the panel's validation is stricter than MemVault's.** Two extra refusals, both about failures that would otherwise be invisible: an empty value (the prompt reader skips empty blocks, so such a write would look like nothing happened) and a value over 8000 characters (argv limits are real). Everything else is left to MemVault, which stays the source of truth.
 
 ## ⚠️ Known limits
 
 - **No extraction window.** Extraction is synchronous and ships a single turn. Batching several turns and running asynchronously would be cheaper and give a better signal-to-noise ratio; today `includeAssistant: false` is the mitigation.
 - **Source changes need a real host restart.** Editing the plugin's own `lib/*.js` (or its config) is only picked up by a genuine process restart — "refresh the UI" is not enough, and the symptom is simply *no change*. A **newly added client half additionally needs a page reload**, because the boot graph is rendered into the index response.
-- **The panel is a viewer, not an editor.** It shows and re-reads; it cannot write a core block or trigger an extraction. Both are deliberate: a panel that edits memory is a different (and more dangerous) surface.
+- **The panel edits core blocks, not memories.** Create / replace / delete on the stable `(scope_type, scope_id, label)` blocks only. It never writes a memory (that goes through extraction, embeddings included) and it never triggers an extraction by hand.
 - **`node:sqlite` is experimental** in the Node versions DSH currently ships.
 - **Machine-specific defaults.** `scopes` defaults to the author's `(user, lenovo)` / `(agent, claude-code-memory)` pairs, and the shipped patch points at the author's checkout. Both are meant to be edited.
 
@@ -244,7 +256,7 @@ The end-to-end step forces the offline embedder and rule extractor in a temporar
 
 - **Async, windowed extraction** — accumulate N turns or idle out, then extract in the background.
 - **A config schema** so the Plugins page can edit the knobs instead of a hand-written patch (the panel's page is the natural home for it).
-- **Block editing from the panel** — create/update a core block without leaving the GUI.
+- **Memory browsing in the panel** — a second tab over `memory_search` results, with the same read-only discipline the core blocks had.
 
 ## 📄 License
 
