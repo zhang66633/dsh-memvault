@@ -22,6 +22,7 @@ import {
   turnSpanByBoundary,
 } from '../lib/extract.js'
 import { DEFAULT_EXTRACT } from '../lib/index.js'
+import { DEFAULT_WINDOW, createTurnWindow } from '../lib/window.js'
 
 const failures = []
 function check(label, ok, detail = '') {
@@ -144,6 +145,116 @@ try {
     bad.error?.slice(0, 60) ?? '')
 } finally {
   rmSync(dir, { recursive: true, force: true })
+}
+
+// ── the turn window: when a flush happens (fake timers, no clock) ────────────
+{
+  const makeClock = () => {
+    let nextId = 1
+    const timers = new Map()
+    return {
+      timers,
+      setTimer(fn, ms) { const id = nextId++; timers.set(id, { fn, ms }); return id },
+      clearTimer(id) { timers.delete(id) },
+      fire(id) { const t = timers.get(id); timers.delete(id); t.fn() },
+      only() { return [...timers.keys()][0] },
+    }
+  }
+  const turn = (seq) => ({ seq, events: [{ seq }], at: new Date(seq * 1000).toISOString() })
+
+  const clock = makeClock()
+  const flushed = []
+  const w = createTurnWindow({
+    everyNTurns: 3, windowTurns: 5, idleMs: 1000,
+    flush: (id, turns) => flushed.push({ id, turns: turns.length }),
+    setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+  })
+
+  check('below everyNTurns nothing is armed',
+    w.push('a', turn(1)).action === 'waiting' && clock.timers.size === 0)
+  check('the second turn still waits', w.push('a', turn(2)).action === 'waiting')
+  const armed = w.push('a', turn(3))
+  check('reaching everyNTurns arms the idle timer',
+    armed.action === 'armed' && armed.turns === 3 && clock.timers.size === 1,
+    JSON.stringify(armed))
+  check('the timer waits idleMs', clock.timers.get(clock.only()).ms === 1000)
+  check('the window reports what is pending',
+    w.pending('a') === 3 && w.pendingWindows()[0].sessionId === 'a')
+
+  const firstTimer = clock.only()
+  const rearmed = w.push('a', turn(4))
+  check('a new turn re-arms the timer instead of flushing early',
+    rearmed.action === 'armed' && !clock.timers.has(firstTimer) && clock.timers.size === 1)
+  check('nothing has been flushed yet', flushed.length === 0)
+
+  const capped = w.push('a', turn(5))
+  check('a full window flushes immediately, without waiting for idle',
+    capped.action === 'flushed' && capped.turns === 5 && flushed.length === 1 && flushed[0].turns === 5,
+    JSON.stringify(capped))
+  check('a flush leaves nothing pending and no timer behind',
+    w.pending('a') === 0 && clock.timers.size === 0)
+
+  // Idle path: three turns, then quiet.
+  w.push('a', turn(6))
+  w.push('a', turn(7))
+  w.push('a', turn(8))
+  const idleTimer = clock.only()
+  check('the idle path is armed again', idleTimer !== undefined)
+  clock.fire(idleTimer)
+  check('firing the idle timer flushes the window',
+    flushed.length === 2 && flushed[1].turns === 3, JSON.stringify(flushed))
+  check('the timed-out window is empty afterwards', w.pendingWindows().length === 0)
+
+  // Per-session isolation.
+  w.push('a', turn(9))
+  w.push('b', turn(10))
+  w.push('b', turn(11))
+  w.push('b', turn(12))
+  check('sessions keep separate windows',
+    w.pending('a') === 1 && w.pending('b') === 3 && w.pendingWindows().length === 2,
+    JSON.stringify(w.pendingWindows()))
+  check('flushAll hands over every non-empty window', w.flushAll() === 2 && flushed.length === 4)
+  check('flushNow on an empty window is a no-op', w.flushNow('zzz') === 0)
+
+  // Disposal must not leave a timer that fires into a disposed plugin.
+  w.push('a', turn(13))
+  w.push('a', turn(14))
+  w.push('a', turn(15))
+  check('a window is armed before disposal', clock.timers.size === 1)
+  w.dispose()
+  check('dispose clears the timers and the windows',
+    clock.timers.size === 0 && w.pendingWindows().length === 0)
+
+  check('everyNTurns must be a positive integer',
+    (() => { try { createTurnWindow({ everyNTurns: 0 }); return false } catch { return true } })())
+  check('windowTurns must be a positive integer',
+    (() => { try { createTurnWindow({ windowTurns: 0 }); return true } catch { return false } })() === false)
+  check('the defaults are the documented ones',
+    DEFAULT_WINDOW.everyNTurns === 3 && DEFAULT_WINDOW.idleMs === 20000 && DEFAULT_WINDOW.windowTurns === 8,
+    JSON.stringify(DEFAULT_WINDOW))
+}
+
+// ── a window renders as one transcript ──────────────────────────────────────
+{
+  const turns = [
+    { seq: 2, events: [
+      { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: '第一轮：用 SQLite。' }] } },
+      { seq: 2, type: 'turn/end', data: { reason: { kind: 'completed' } } },
+    ] },
+    { seq: 4, events: [
+      { seq: 3, type: 'user/message', data: { content: [{ type: 'text', text: '第二轮：只读打开。' }] } },
+      { seq: 4, type: 'turn/end', data: { reason: { kind: 'completed' } } },
+    ] },
+  ]
+  const text = renderTranscript(turns.flatMap((t) => t.events), 6000)
+  check('a window renders every turn in order',
+    text.includes('第一轮：用 SQLite。') && text.includes('第二轮：只读打开。')
+    && text.indexOf('第一轮') < text.indexOf('第二轮'),
+    `${text.length} chars`)
+  const capped = renderTranscript(turns.flatMap((t) => t.events), 20)
+  check('the window transcript keeps the newest lines within budget',
+    capped.length <= 20 && capped.includes('第二轮') && !capped.includes('第一轮'),
+    `${capped.length} chars`)
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `FAILED: ${failures.join(', ')}`}`)

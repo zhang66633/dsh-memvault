@@ -26,12 +26,17 @@
         # 面板（浏览器半边）：writes=false 时面板只读，写核心块的路由回 403。
         panel:
           writes: true
-        # 写入端：每 N 轮把这个回合的对话交给 MemVault（它自己做 LLM 抽取 + 向量化）。
-        # 一次 = 起一个 Python 进程 + 一次真实 LLM 调用，所以有节流；0 轮即关闭。
+        # 写入端：攒够 N 轮后，等会话安静下来（idleMs）或窗口满（windowTurns）再把整窗
+        # 对话交给 MemVault（它自己做 LLM 抽取 + 向量化）——一次调用覆盖多轮，
+        # 比每轮一次更省、信噪比更高。一次 = 一个 Python 进程 + 一次真实 LLM 调用。
         extract:
           enabled: true
-          # 每个完成的回合抽取一次
+          # 至少攒够几轮才考虑抽取
           everyNTurns: 3
+          # 安静这么久就抽取（期间又来了新回合则重新计时）
+          idleMs: 20000
+          # 窗口上限：满这么多轮立即抽取，避免一直等不到安静
+          windowTurns: 8
           # 默认只送用户回合：助手台词会污染抽取（实测抽出过「智能体运行在 DSH 上」这类）
           includeAssistant: false
           includeTools: false

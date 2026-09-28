@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.4.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -28,7 +28,7 @@
 | 半边 | 做什么 | 机制 |
 |---|---|---|
 | **注入（读）** | 核心记忆块进入 system prompt，**每一步**都看得到，模型不必调用任何工具 | `ctx.systemPrompt.context()` —— 动态 runtime 上下文贡献（与 `skill-catalog` 同一条通道） |
-| **抽取（写）** | 每 *N* 个完成的回合，把这轮对话交给 MemVault 的抽取/向量化管线 | `ctx.on('session/event')` → `turn/end` → `python -m memvault.cli add --stdin` |
+| **抽取（写）** | 完成的回合先攒进一个**窗口**，窗口再作为**一整段对话**交给 MemVault 的抽取/向量化管线 | `ctx.on('session/event')` → `turn/end` → 窗口 → `python -m memvault.cli add --stdin`（安静时触发） |
 | **可视化（面板）** | 此刻注入了什么、抽取最近干了什么，还能**直接改核心块** | 三条 exact host 路由（`/memvault/api/*`）+ 一个浏览器半边，落在会话页签环与 Plugins 设置页 |
 
 ## ✨ 特性
@@ -39,7 +39,9 @@
 | 🗄️ **直读 SQLite（只读）** | 用 Node 内置的 `node:sqlite` 只读打开 `memvault.db`：不过 HTTP、不起子进程、无第三方依赖，也不需要任何服务在跑 |
 | 💾 **渲染结果按 TTL 缓存** | system prompt 就是 **KV cache 的前缀**：每步重读重渲染是白费，而任何一个字节变化都会让缓存从该点起失效。所以渲染被缓存（`refreshMs`，默认 30 秒） |
 | 🧩 **按回合边界切片** | 写半边从自己那份有界事件日志里按 `turn/end` 边界切回合：幂等、跨重启稳定、没有会过期失准的水位算术 |
-| ⏱️ **把成本做成旋钮** | `everyNTurns` 控 Python 进程频率，`minTranscriptChars` 跳过琐碎回合，`endReasons` 决定哪些结束方式算数，`timeoutMs` 杀掉卡住的子进程 |
+| ⏱️ **把成本做成旋钮** | 窗口本身是一组旋钮：`everyNTurns` 决定什么时候值得抽，`idleMs` 等一个停顿，`windowTurns` 封顶，`minTranscriptChars` 跳过琐碎回合，`endReasons` 决定哪些结束方式算数，`timeoutMs` 杀掉卡住的子进程 |
+| 🌙 **后台跑，不在关键路径上** | 抽取发生在会话安静下来的时候——你读答案的时候，而不是你等答案的时候；而且一次调用覆盖最多 `windowTurns` 轮，不再一轮一次 |
+| 💾 **窗口跨重启不丢** | 等着的窗口（渲染后的转写文本，有界）每来一轮就写进状态文件，所以轮与轮之间重启不会静默丢记忆；挂载时仍在等待的窗口会被抽取，并在诊断里标成 recovered |
 | 🎭 **角色过滤** | 默认不送助手台词与工具流量——送它们曾把模型自己的话存成「关于用户的事实」 |
 | 🪶 **零运行时依赖** | 就是 harness 插件协议上的裸 ESM：`node:sqlite`、`node:child_process`、`node:fs`。没有要装的东西；浏览器半边是照着 ModuleLoader 封装手写的，不引入打包器 |
 | 🎛️ **一个真面板** | 会话页签环里的 **记忆** 页签 + Settings → Plugins 里的一页：当前注入的块（label、作用域、字符数与它的存储上限、原文）、读预算与缓存年龄、抽取旋钮、有水位线的会话数、最近 5 次抽取结果，外加一个跳过 30 秒 TTL 的 **立即重读** 按钮 |
@@ -118,7 +120,9 @@ npm test          # lib/client.js 过期会直接失败
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `true` | 关掉则完全只读 |
-| `everyNTurns` | `3` | 每 N 个**已完成**的回合抽取一次；`1` = 每轮 |
+| `everyNTurns` | `3` | 至少攒够几轮才考虑抽取；`1` = 每轮（仍然走窗口） |
+| `idleMs` | `20000` | 安静这么久就把窗口交出去；期间又完成一轮则重新计时 |
+| `windowTurns` | `8` | 硬上限：满这么多轮立即抽取，所以从不安静的会话也会被抽到 |
 | `endReasons` | `['completed','max-tokens']` | 哪些 `turn/end` 原因算数。`aborted` / `error` / `interrupted` / `blocked` 默认跳过——但 `max-tokens` **不跳**，被截断的回合里同样有真实的用户内容 |
 | `includeAssistant` / `includeTools` | `false` / `false` | 抽取器不区分角色，助手台词曾被存成「事实」，所以默认关 |
 | `maxInputChars` | `6000` | 转写文本预算；取最新的行，旧行先丢 |
@@ -139,6 +143,7 @@ npm test          # lib/client.js 过期会直接失败
 | `/memvault/api/status` | `GET` | 注入中的块（label、作用域、字符数、存储上限、原文裁剪到 2000）、读配置、缓存年龄、抽取配置、水位会话数、最近 5 次诊断，以及写入是否开启 |
 | `/memvault/api/refresh` | `POST` | 丢掉渲染 TTL 之后的同样载荷 —— 也就是「立即重读」按钮 |
 | `/memvault/api/blocks` | `POST` | 通过 MemVault CLI 执行一次块操作：`{ action: 'set', type, id, label, value, limit? }`（upsert）或 `{ action: 'delete', type, id, label }` |
+| `/memvault/api/flush` | `POST` | 立刻抽取所有待抽取窗口（「立即抽取」按钮）。返回交出去了几个会话；真正的工作仍然是排队跑的。抽取关闭时回 405 |
 
 三个 handler 都会拒绝非 loopback `Host`、`Origin` 不匹配（浏览器发了才有）、以及 `Sec-Fetch-Site: cross-site` 的请求（回 403）。它们是 `exact` 路由，所以先于 shell 的 index/`/api` handler 命中。非法 action、非法的作用域类型、空值、超长值都在起进程之前就回 400；CLI 失败回 502。
 
@@ -193,10 +198,11 @@ flowchart LR
 写路径，每个完成的回合：
 
 1. 每个追加的会话事件都按会话缓冲（两个维度都有上限）。
-2. 收到原因可接受的 `turn/end` 时，回合计数推进。
-3. 每到第 `everyNTurns` 个回合，从缓冲区里**按回合边界**切片，渲染成只含用户的转写文本（旧行先丢），够长才入队。
-4. 抽取串行化：同一时刻只有一个子进程，且一轮失败不会污染下一轮。
-5. 剩下交给 MemVault——LLM 抽取、ADD/UPDATE/DELETE 决策、向量化、关系——所以写进去的行**检索得到**。
+2. 收到原因可接受的 `turn/end` 时，**按回合边界**从缓冲区切片，然后推进该会话的窗口。
+3. 窗口自己决定：不足 `everyNTurns` 就继续等；到 `everyNTurns` 就武装一个空闲计时器；到 `windowTurns`——或计时器触发——就把整窗作为**一份**有界、只含用户的转写文本交出去。
+4. 每次推进都把窗口写进状态文件，所以轮与轮之间重启不丢东西；挂载时仍在等待的窗口会被抽取并标记 `recovered`。
+5. 抽取串行化：同一时刻只有一个子进程，且一个窗口失败不会污染下一个。
+6. 剩下交给 MemVault——LLM 抽取、ADD/UPDATE/DELETE 决策、向量化、关系——所以写进去的行**检索得到**。
 
 面板路径，打开时与之后每 15 秒：
 
@@ -218,7 +224,7 @@ npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动�
 
 面板的行为是 `smoke:panel` 钉住的：TTL 未到期时必须返回旧渲染（即使期间库里多了一行），`POST /refresh` 必须把那行捞进来，不可信的 `Host`/`Origin` 必须 403，handler 抛错必须变成 500 而不是 reject，库读不了必须仍然 200 并带上上次知道的块，而入库的 `lib/client.js` 必须等于 `src/client/index.js` 构建出来的结果。它的写半边跑的是**对临时库的真实 CLI 写入**：路由建一个块、同 label 再写一次必须是 upsert 而不是第二个块、删除必须删掉、`panel.writes: false` 必须回 403，以及看起来像选项的值（`--not-a-flag`）必须作为数据穿过 argv 解析。
 
-端到端那一步在临时库里强制使用离线 embedder 与规则抽取器：不碰真实库，也不调用 .env 里配置的网关。
+端到端那一步在临时库里强制使用离线 embedder 与规则抽取器：不碰真实库，也不调用 .env 里配置的网关。`smoke:panel` 对窗口又往前走一步：把两个完成的回合真的喂给 `session/event` handler，检查等待中的窗口被报告且被持久化，再通过路由 flush，最后断言结果是**一次**覆盖两轮的调用、两条事实都进了库。
 
 **装机后的实测**：重启后执行轨迹的「上下文注入」列表里会多出一条 `memvault:core`，内容就是你的核心块；Plugins 页上能看到 bundle 的行（`memvault-core-context`）为 active；**记忆** 页签会把同一批块连同字符数与最近抽取结果画出来。
 
@@ -240,13 +246,18 @@ npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动�
 
 **为什么面板路由自己校验调用方。** 通过 `webServer` 注册的路由**不**经过 `dsh-client-connection` 的准入——那道门只守 index 交换与 `/api` 桥。面板因此自己套用桥文档里的同一条请求信任规则（loopback host、有 `Origin` 时必须一致、不允许 cross-site 的 `Sec-Fetch-Site`），让 DNS rebinding 页面既读不到也写不了库。这是**边界，不是身份**；服务器本身仍然只绑 loopback。
 
+**为什么抽取要窗口化、并且等安静。** 一轮一次调用既贵（每次一个 Python 进程 + 一次 LLM 调用）又吵：单独一句「好，就这么办」几乎没有信息量，而围绕一个决定的那三四轮里全是信息。等安静不花钱——活儿在你读答案的时候干，而不是在你等答案的时候干——`windowTurns` 则保证一个从不安静的会话不会被无限推迟。整套策略是 push 与计时器的纯函数（`window.js`），所以它是用假计时器测的，而不是靠等。
+
+**为什么等待中的窗口要落盘。** 窗口化把「在途」时间从一轮拉长到最多八轮加一个空闲计时器，只存在内存里的东西恰恰就是重启会丢的东西。落盘的只有渲染后的转写文本，受 `maxInputChars` 约束，且只保留最新的几个会话——文件始终很小；恢复的抽取会在诊断里带 `recovered: true`，让它可见而不是神秘。
+
 **为什么面板写入也走 CLI。** 核心块写起来很便宜——不调 LLM、不做向量化，与 memory 不同——但它仍然必须经过 MemVault 自己的 `core_append`：upsert 语义、`block.updated` 事件、`value_limit` 都在那里。直接 `INSERT` 会同时跳过这三样。CLI 把 value 当 argv 位置参数，所以面板把上限卡在 8000 字符，并在位置参数前放 `--`：`--not-a-flag` 这种值必须仍然是数据。
 
 **为什么面板的校验比 MemVault 更严。** 多两条拒绝，都是针对「否则会静默无事发生」的失败：空值（提示词读取器会跳过空块，写进去等于什么都没做）和超过 8000 字符的值（argv 长度限制是真实的）。其余判断都交给 MemVault，它仍然是唯一的事实来源。
 
 ## ⚠️ 已知边界
 
-- **没有抽取窗口。** 抽取是同步的、只送单轮。攒够多轮再异步跑会更省成本、信噪比也更好；现在的缓解手段是 `includeAssistant: false`。
+- **抽取发生在停顿之后，不是即时。** 这正是设计意图（LLM 调用不占关键路径），代价是「刚说的话」通常要等会话安静 `idleMs` 之后才被记住——或者用面板的「立即抽取」当场触发。
+- **窗口存的是文本，不是日志。** 恢复时重发的是渲染后的转写文本，因此它无法重新推导出没被渲染的内容（助手台词与工具流量本来默认就关）。
 - **源码改动需要真正重启 host。** 改插件自己的 `lib/*.js`（或它的配置）只有进程真重启才会加载——「刷新界面」不算，症状就是*什么都没变*。**新加的客户端半边还要额外刷新一次页面**，因为启动图是渲染进 index 响应的。
 - **面板改的是核心块，不是记忆。** 只对稳定的 `(scope_type, scope_id, label)` 块做增/改/删。它永远不写一条 memory（那要走抽取 + 向量化），也不会手动触发抽取。
 - **`node:sqlite` 仍是 experimental**（DSH 当前自带的 Node 版本就是如此）。
@@ -254,9 +265,9 @@ npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动�
 
 ## 🗺️ 路线图
 
-- **异步 + 窗口化抽取** —— 攒够 N 轮或空闲时后台跑。
 - **配置 schema** —— 让 Plugins 页能直接编辑这些旋钮，而不是手写 patch（面板那一页就是它天然的位置）。
 - **面板里浏览记忆** —— 第二个页签展示 `memory_search` 的结果，沿用核心块那套只读纪律。
+- **抽取质量反馈** —— 面板已经能看出每个窗口抽出了什么，下一步是让它能把一次糟糕的抽取反馈回 MemVault。
 
 ## 📄 许可
 

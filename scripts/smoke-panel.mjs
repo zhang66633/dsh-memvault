@@ -16,6 +16,7 @@
  * It also fails when `lib/client.js` does not match `src/client/index.js`, so a
  * stale panel cannot ship.
  */
+import { DatabaseSync } from 'node:sqlite'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,6 +24,7 @@ import { createContext, runInContext } from 'node:vm'
 import {
   BLOCKS_PATH,
   BLOCK_VALUE_CLAMP,
+  FLUSH_PATH,
   MAX_BODY_BYTES,
   REFRESH_PATH,
   STATUS_PATH,
@@ -248,8 +250,9 @@ try {
     children.length === 1 && children[0].deps.join(',') === 'webServer', JSON.stringify(children.map((c) => c.deps)))
 
   children[0].callback(childCtx)
-  check('all three exact routes are registered',
-    routes.has(STATUS_PATH) && routes.has(REFRESH_PATH) && routes.has(BLOCKS_PATH), [...routes.keys()].join(', '))
+  check('all four exact routes are registered',
+    routes.has(STATUS_PATH) && routes.has(REFRESH_PATH) && routes.has(BLOCKS_PATH) && routes.has(FLUSH_PATH),
+    [...routes.keys()].join(', '))
 
   const call = async (path, method = 'GET', body = null, headers = { host: '127.0.0.1:19387' }) => {
     const out = { code: null, body: null }
@@ -282,6 +285,20 @@ try {
   check('the read half reports its budget and TTL',
     first.body.read.maxChars === 4000 && first.body.read.refreshMs === 30000)
   check('the payload says the panel may write', first.body.writable === true)
+  check('the payload reports the window policy and an empty window',
+    first.body.extract.window.everyNTurns === 3 && first.body.extract.window.idleMs === 20000
+    && first.body.extract.window.windowTurns === 8 && Array.isArray(first.body.extract.window.pending)
+    && first.body.extract.window.pending.length === 0,
+    JSON.stringify(first.body.extract.window))
+
+  // ── the flush route ────────────────────────────────────────────────────────
+  const untrustedFlush = await call(FLUSH_PATH, 'POST', null, { host: 'evil.example' })
+  check('the flush route refuses an untrusted host', untrustedFlush.code === 403, `code=${untrustedFlush.code}`)
+  const flushVerb = await call(FLUSH_PATH, 'GET')
+  check('the flush route is POST only', flushVerb.code === 405, `code=${flushVerb.code}`)
+  const flushedEmpty = await call(FLUSH_PATH, 'POST')
+  check('flushing an empty window is a reported no-op',
+    flushedEmpty.code === 200 && flushedEmpty.body.flushed === 0, JSON.stringify(flushedEmpty.body))
 
   // A row written now must NOT appear while the render TTL is warm …
   const wrote = await setViaCli({ action: 'set', type: 'user', id: 'lenovo', label: 'persona', value: '协作风格：简练。' })
@@ -376,6 +393,16 @@ try {
     { writeHead(code) { readOnlyStatus.code = code }, end(payload) { readOnlyStatus.body = JSON.parse(payload) } },
   )
   check('the status payload tells the panel it is read-only', readOnlyStatus.body.writable === false)
+  const readOnlyFlush = { code: null, body: null }
+  await readOnlyRoutes.get(FLUSH_PATH).handler(
+    { headers: { host: '127.0.0.1:19387' }, method: 'POST' },
+    { writeHead(code) { readOnlyFlush.code = code }, end(payload) { readOnlyFlush.body = JSON.parse(payload) } },
+  )
+  check('with extraction disabled the flush route says so',
+    readOnlyFlush.code === 405 && /disabled/.test(readOnlyFlush.body.error), readOnlyFlush.body.error)
+  check('with extraction disabled the window is still reported (empty)',
+    Array.isArray(readOnlyStatus.body.extract.window.pending)
+    && readOnlyStatus.body.extract.window.pending.length === 0)
 
   // A broken store degrades, it does not throw.
   const brokenCtx = { ...ctx, systemPrompt: { context(spec) { contexts.push(spec); return () => {} } } }
@@ -405,6 +432,108 @@ try {
 
   check('loadState round-trips watermarks and diagnostics',
     loadState(statePath).watermarks.size === 2 && loadState(statePath).diagnostics.length === 1)
+
+  // ── the window, end to end: two turns, ONE extraction call ─────────────────
+  {
+    const windowDb = join(dir, 'window.db')
+    const windowState = join(dir, 'window-state.json')
+    const listeners = new Map()
+    const windowChildren = []
+    const windowCtx = {
+      logger: { warn() {}, info() {} },
+      effect: (fn) => fn(),
+      on(name, fn) { listeners.set(name, fn) },
+      systemPrompt: { context: () => () => {} },
+      inject: (deps, cb) => windowChildren.push({ deps, cb }),
+    }
+    applyHost(windowCtx, {
+      dbPath: windowDb,
+      scopes: [{ type: 'user', id: 'lenovo' }],
+      extract: {
+        enabled: true,
+        everyNTurns: 2,
+        // Long enough that only the manual flush can trigger this run; the idle
+        // path is covered by the fake-clock tests in smoke-extract.
+        idleMs: 3_600_000,
+        windowTurns: 8,
+        minTranscriptChars: 10,
+        statePath: windowState,
+        pythonPath: DEFAULT_EXTRACT.pythonPath,
+        projectDir: DEFAULT_EXTRACT.projectDir,
+        env: {
+          ...DEFAULT_EXTRACT.env,
+          MEMVAULT_DB_PATH: windowDb,
+          MEMVAULT_EMBEDDER: 'local',
+          MEMVAULT_EXTRACTOR: 'rule',
+        },
+        user: 'lenovo',
+        agent: null,
+      },
+    })
+    const windowRoutes = new Map()
+    windowChildren[0].cb({
+      effect: (fn) => fn(),
+      webServer: { register: (route) => { windowRoutes.set(route.path, route); return () => {} } },
+    })
+    const onEvent = listeners.get('session/event')
+    check('the plugin subscribes to session/event', typeof onEvent === 'function')
+
+    const session = { id: 'sess-window' }
+    const feed = (seq, text) => {
+      onEvent(session, { seq, type: 'user/message', data: { content: [{ type: 'text', text }] } })
+      onEvent(session, { seq: seq + 1, type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    }
+    const ask = async (path, method = 'GET') => {
+      const out = { code: null, body: null }
+      await windowRoutes.get(path).handler(
+        { headers: { host: '127.0.0.1:19387' }, method, on(event, handler) { if (event === 'end') handler() } },
+        { writeHead(code) { out.code = code }, end(payload) { out.body = JSON.parse(payload) } },
+      )
+      return out
+    }
+
+    feed(1, '我喜欢吃辣的食物，尤其是川菜。')
+    feed(3, '我住在南京，周末常去爬山。')
+
+    const waiting = await ask(STATUS_PATH)
+    check('two finished turns wait in the window',
+      waiting.body.extract.window.pending.length === 1
+      && waiting.body.extract.window.pending[0].turns === 2
+      && waiting.body.extract.window.pending[0].sessionId === 'sess-window',
+      JSON.stringify(waiting.body.extract.window.pending))
+    check('the waiting window is persisted for a restart',
+      loadState(windowState).pending['sess-window']?.turns === 2,
+      JSON.stringify(loadState(windowState).pending))
+    check('the persisted window carries the rendered transcript',
+      loadState(windowState).pending['sess-window']?.text.includes('南京'),
+      String(loadState(windowState).pending['sess-window']?.chars))
+
+    const flushed = await ask(FLUSH_PATH, 'POST')
+    check('the flush route hands the window over', flushed.code === 200 && flushed.body.flushed === 1,
+      JSON.stringify(flushed.body))
+
+    const deadline = Date.now() + 90_000
+    let diagnostic = null
+    while (Date.now() < deadline) {
+      const last = loadState(windowState).diagnostics.at(-1)
+      if (last && Number(last.turns) === 2 && last.outcome !== undefined) { diagnostic = last; break }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    check('the window was extracted as ONE call covering both turns',
+      diagnostic !== null && String(diagnostic.outcome).startsWith('ok'),
+      JSON.stringify(diagnostic))
+    check('the window is cleared and the watermark advanced past both turns',
+      Object.keys(loadState(windowState).pending).length === 0
+      && loadState(windowState).watermarks.get('sess-window') === 4,
+      JSON.stringify({ pending: Object.keys(loadState(windowState).pending), wm: loadState(windowState).watermarks.get('sess-window') }))
+
+    const windowStore = new DatabaseSync(windowDb, { readOnly: true })
+    const rows = windowStore.prepare('SELECT memory FROM memories').all()
+    windowStore.close()
+    check('the extracted facts are in the store',
+      rows.length >= 1 && rows.some((r) => typeof r.memory === 'string'),
+      JSON.stringify(rows.map((r) => r.memory)))
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.4.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -28,7 +28,7 @@ The plugin does three things:
 | Half | What it does | Mechanism |
 |---|---|---|
 | **Inject** (read) | Core memory blocks enter the system prompt, visible on **every** step without the model calling a tool | `ctx.systemPrompt.context()` — a dynamic runtime-context contribution (the same channel as `skill-catalog`) |
-| **Extract** (write) | Every *N*th finished turn, the turn's transcript is handed to MemVault's extraction/embedding pipeline | `ctx.on('session/event')` → `turn/end` → `python -m memvault.cli add --stdin` |
+| **Extract** (write) | Finished turns accumulate into a window, and the window is handed to MemVault's extraction/embedding pipeline as **one** conversation | `ctx.on('session/event')` → `turn/end` → window → `python -m memvault.cli add --stdin` (idle-triggered) |
 | **Show** (panel) | What is injected right now, what extraction has been doing, and **editing the core blocks themselves** | three exact host routes (`/memvault/api/*`) + a browser half rendered as a conversation tab and a Plugins settings page |
 
 ## ✨ Features
@@ -39,7 +39,9 @@ The plugin does three things:
 | 🗄️ **Direct read-only SQLite** | Node's built-in `node:sqlite` opens `memvault.db` read-only — no HTTP hop, no subprocess, no third-party dependency, no server that must be up |
 | 💾 **TTL-cached rendering** | The system prompt *is* the KV-cache prefix; re-reading and re-rendering every step is wasted work and any byte change invalidates reuse — so the render is cached (`refreshMs`, default 30 s) |
 | 🧩 **Turn-boundary slicing** | The write half slices the turn from its own bounded event log by `turn/end` boundaries: idempotent, restart-proof, no watermark arithmetic to go stale |
-| ⏱️ **Cost-aware extraction** | `everyNTurns` throttles the Python process, `minTranscriptChars` skips trivia, `endReasons` decides which turn endings count, `timeoutMs` kills a stuck child |
+| ⏱️ **Cost-aware extraction** | The window is a knob: `everyNTurns` decides when extraction becomes worth considering, `idleMs` waits for a pause, `windowTurns` caps it, `minTranscriptChars` skips trivia, `endReasons` decides which turn endings count, `timeoutMs` kills a stuck child |
+| 🌙 **Background, not on the critical path** | Extraction runs when the session goes quiet — during a pause, not while you are waiting for an answer — and one call covers up to `windowTurns` turns instead of one call per turn |
+| 💾 **Restart-safe window** | The waiting window (its rendered transcript, bounded) is written to the state file on every turn, so a restart between turns does not silently drop memories; anything still pending is extracted on mount and marked as recovered |
 | 🎭 **Role filtering** | Assistant prose and tool traffic are excluded by default — shipping them stored the model's own words as "facts about the user" |
 | 🪶 **Zero runtime dependencies** | Plain ESM over the harness plugin protocol: `node:sqlite`, `node:child_process`, `node:fs`. Nothing to install, and the browser half is hand-written against the ModuleLoader envelope instead of being bundled |
 | 🎛️ **A real panel** | A **记忆** tab in the conversation ring and a page under Settings → Plugins: the blocks currently injected (label, scope, characters against their stored limit, text), the read budget and cache age, the extraction knobs, sessions with a watermark, and the last five extraction outcomes — plus a **立即重读** button that ignores the 30 s render TTL |
@@ -118,7 +120,9 @@ Everything is a code default; a `config` block in `cordis.patch.yml` overrides i
 | Field | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | `false` makes the plugin read-only |
-| `everyNTurns` | `3` | Extract once per N **finished** turns; `1` = every turn |
+| `everyNTurns` | `3` | Turns that must accumulate before an extraction is considered; `1` = every turn (still windowed) |
+| `idleMs` | `20000` | Quiet time that hands the window over. A new finished turn re-arms it |
+| `windowTurns` | `8` | Hard cap: reaching this many turns extracts immediately, so a session that never pauses still gets extracted |
 | `endReasons` | `['completed','max-tokens']` | Which `turn/end` reasons count. `aborted` / `error` / `interrupted` / `blocked` are skipped — but `max-tokens` is not, because a truncated turn still holds the user's message |
 | `includeAssistant` / `includeTools` | `false` / `false` | The extractor does not separate roles; the assistant's own prose became stored "facts", so it is off by default |
 | `maxInputChars` | `6000` | Transcript budget; newest lines win, oldest are dropped |
@@ -139,6 +143,7 @@ The browser half has no knobs of its own; it reads the two routes the host half 
 | `/memvault/api/status` | `GET` | Injected blocks (label, scope, characters, stored limit, value clamped to 2000), read config, cache age, extraction config, watermark session count, last five diagnostics, and whether writes are enabled |
 | `/memvault/api/refresh` | `POST` | The same payload after dropping the render TTL — the 立即重读 button |
 | `/memvault/api/blocks` | `POST` | One block action through MemVault's CLI: `{ action: 'set', type, id, label, value, limit? }` (upsert) or `{ action: 'delete', type, id, label }` |
+| `/memvault/api/flush` | `POST` | Extract every pending window now (the 立即抽取 button). The answer says how many sessions were handed over; the work stays queued. Answers 405 when extraction is disabled |
 
 The handlers refuse anything that is not a loopback `Host` with a matching `Origin` (when the browser sends one) and a same-site `Sec-Fetch-Site`, answering 403 otherwise. They are `exact` routes, so they match before the shell's index/`/api` handlers. A bad action, an unknown scope type, an empty value or an over-long value is a 400 before anything is spawned; a CLI failure is a 502.
 
@@ -193,10 +198,11 @@ Read path, per step:
 Write path, per finished turn:
 
 1. Every appended session event is buffered per session (bounded on both axes).
-2. On `turn/end` with an accepted reason, the turn counter advances.
-3. Every `everyNTurns`-th turn is sliced **by turn boundary** from that buffer, rendered to a user-only transcript (oldest lines dropped first), and, if long enough, queued.
-4. Extractions are serialized: one child at a time, and a failure in one turn cannot poison the next.
-5. MemVault does the rest — LLM extraction, ADD/UPDATE/DELETE decisions, embeddings, relations — so written rows are actually *retrievable*.
+2. On `turn/end` with an accepted reason, the turn is sliced **by turn boundary** from that buffer and pushed onto the session's window.
+3. The window decides: below `everyNTurns` it keeps waiting; at `everyNTurns` it arms an idle timer; at `windowTurns` — or when the timer fires — it hands the whole window over, as the newest lines of one bounded, user-only transcript.
+4. The window is persisted on every push, so a restart between turns loses nothing; a window still waiting at mount is extracted and marked `recovered`.
+5. Extractions are serialized: one child at a time, and a failure in one window cannot poison the next.
+6. MemVault does the rest — LLM extraction, ADD/UPDATE/DELETE decisions, embeddings, relations — so written rows are actually *retrievable*.
 
 Panel path, on open and every 15 s:
 
@@ -218,7 +224,7 @@ npm run smoke:panel   # mounts the plugin on a stub context, drives both routes 
 
 `smoke:panel` is where the panel's behaviour is actually pinned down: the TTL must serve a stale render while a row written in between exists, `POST /refresh` must pick that row up, an untrusted `Host`/`Origin` must get 403, a throwing handler must become a 500 rather than reject, an unreadable store must still answer 200 with the blocks it last knew, and the shipped `lib/client.js` must equal what `src/client/index.js` builds to. Its write half runs **real CLI writes against a throwaway store**: the route creates a block, an upsert of the same label must not create a second one, a delete removes it, `panel.writes: false` turns the route into a 403, and a value that looks like an option (`--not-a-flag`) must survive argv parsing as data.
 
-The end-to-end step forces the offline embedder and rule extractor in a temporary database: it never touches the real store and never calls the configured gateway.
+The end-to-end step forces the offline embedder and rule extractor in a temporary database: it never touches the real store and never calls the configured gateway. `smoke:panel` goes one step further for the window: it feeds two finished turns through the real `session/event` handler, checks the waiting window is reported and persisted, flushes it through the route, and asserts the result is **one** call covering both turns whose two facts land in the store.
 
 **Live check.** After a restart, the trajectory's *injected context* list gains a `memvault:core` entry whose content is your actual blocks, the Plugins page shows the bundle's row (`memvault-core-context`) as active, and the **记忆** tab renders those same blocks with their character counts and the last extraction outcomes.
 
@@ -240,13 +246,18 @@ The end-to-end step forces the offline embedder and rule extractor in a temporar
 
 **Why the panel routes check the caller themselves.** A route registered through `webServer` is not admitted by `dsh-client-connection` — that gate guards the index exchange and the `/api` bridge. The panel answers with the same request-trust rule the bridge documents (loopback host, matching `Origin` when present, no cross-site `Sec-Fetch-Site`) so a DNS-rebinding page cannot read **or write** the store. It is a boundary, not identity; the server still binds loopback only.
 
+**Why extraction is windowed and idle-triggered.** One call per turn was both expensive (a Python process plus an LLM call each time) and noisy: a single "yes, do it" turn carries almost no signal, while the three or four turns around a decision carry all of it. Waiting for quiet costs nothing — the work happens while you are reading, not while you are waiting — and `windowTurns` keeps a session that never pauses from postponing it forever. The whole policy is a pure function of pushes and timers (`window.js`), which is why it is tested with a fake clock rather than by waiting.
+
+**Why the waiting window is written to disk.** Windowed extraction lengthens the "in flight" period from one turn to up to eight plus an idle timer, so anything held only in memory is exactly what a restart drops. Only the rendered transcript is stored, bounded by `maxInputChars`, and only for the newest few sessions — the file stays small, and recovery is marked `recovered: true` in the diagnostics so it is visible rather than mysterious.
+
 **Why the panel writes through the CLI too.** A core block is cheap to write — no LLM call, no embedding, unlike a memory — but it still has to go through MemVault's own `core_append`, which is what owns the upsert semantics, the `block.updated` event and `value_limit`. A direct SQLite `INSERT` would skip all three. The CLI takes the value as an argv positional, so the panel caps it at 8000 characters and puts `--` before the positionals: a value of `--not-a-flag` has to stay data.
 
 **Why the panel's validation is stricter than MemVault's.** Two extra refusals, both about failures that would otherwise be invisible: an empty value (the prompt reader skips empty blocks, so such a write would look like nothing happened) and a value over 8000 characters (argv limits are real). Everything else is left to MemVault, which stays the source of truth.
 
 ## ⚠️ Known limits
 
-- **No extraction window.** Extraction is synchronous and ships a single turn. Batching several turns and running asynchronously would be cheaper and give a better signal-to-noise ratio; today `includeAssistant: false` is the mitigation.
+- **Extraction lands after a pause, not instantly.** That is the point (the LLM call stays off the critical path), but it means a memory written now is normally visible after the session goes quiet for `idleMs` — or immediately via the panel's 立即抽取.
+- **A window is text, not a log.** Recovery re-sends the rendered transcript, so it cannot re-derive turns that were not rendered (assistant prose and tool traffic are off by default anyway).
 - **Source changes need a real host restart.** Editing the plugin's own `lib/*.js` (or its config) is only picked up by a genuine process restart — "refresh the UI" is not enough, and the symptom is simply *no change*. A **newly added client half additionally needs a page reload**, because the boot graph is rendered into the index response.
 - **The panel edits core blocks, not memories.** Create / replace / delete on the stable `(scope_type, scope_id, label)` blocks only. It never writes a memory (that goes through extraction, embeddings included) and it never triggers an extraction by hand.
 - **`node:sqlite` is experimental** in the Node versions DSH currently ships.
@@ -254,9 +265,9 @@ The end-to-end step forces the offline embedder and rule extractor in a temporar
 
 ## 🗺️ Roadmap
 
-- **Async, windowed extraction** — accumulate N turns or idle out, then extract in the background.
 - **A config schema** so the Plugins page can edit the knobs instead of a hand-written patch (the panel's page is the natural home for it).
 - **Memory browsing in the panel** — a second tab over `memory_search` results, with the same read-only discipline the core blocks had.
+- **Extraction quality feedback** — the panel already shows what each window produced; the next step is letting it flag a bad extraction back into MemVault.
 
 ## 📄 License
 

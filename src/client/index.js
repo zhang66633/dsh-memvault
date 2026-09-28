@@ -26,6 +26,7 @@ const NAME = 'dsh-memvault'
 const STATUS_URL = '/memvault/api/status'
 const REFRESH_URL = '/memvault/api/refresh'
 const BLOCKS_URL = '/memvault/api/blocks'
+const FLUSH_URL = '/memvault/api/flush'
 const POLL_MS = 15000
 
 const C = {
@@ -245,6 +246,27 @@ function MemoryPanel() {
     }
   }
 
+  /** Ask the host to extract every pending window now. */
+  const flushNow = async () => {
+    if (!window.confirm('立即抽取会把当前待抽取的窗口交给 MemVault（每个窗口一次 LLM 调用）。继续？')) return
+    setBusy(true)
+    try {
+      const res = await fetch(FLUSH_URL, { method: 'POST' })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || json?.ok !== true) {
+        setWriteError(`HTTP ${res.status}${json?.error ? ` · ${json.error}` : ''}`)
+      } else {
+        setWriteError(null)
+        await new Promise((r) => setTimeout(r, 400))
+        await load(false)
+      }
+    } catch (err) {
+      setWriteError(String(err?.message ?? err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   useEffect(() => {
     let alive = true
     const tick = () => { if (alive) load(false) }
@@ -273,6 +295,7 @@ function MemoryPanel() {
         h('span', { style: S.hint }, data?.at ? `快照 ${new Date(data.at).toLocaleTimeString()}` : ''),
         h('button', { style: S.btn(false), disabled: busy, onClick: () => load(false) }, busy ? '读取中…' : '刷新'),
         h('button', { style: S.btn(true), disabled: busy, onClick: () => load(true), title: '跳过 30 秒缓存，立刻重读核心块' }, '立即重读'),
+        h('button', { style: S.small(C.warn), disabled: busy || extract?.enabled === false, onClick: flushNow, title: '把当前待抽取的窗口立刻交给 MemVault' }, '立即抽取'),
       ),
 
       error && h('div', { style: S.banner(C.err) }, error),
@@ -308,7 +331,10 @@ function MemoryPanel() {
       h(Card, { title: '抽取（写半边）' },
         h('div', { style: S.grid },
           h(KV, { k: '状态', v: extract?.enabled === false ? '已关闭（只读）' : '开启' }),
-          h(KV, { k: '每 N 回合', v: extract?.everyNTurns }),
+          h(KV, { k: '窗口策略', v: extract?.window ? `≥${extract.window.everyNTurns} 轮起，静默 ${Math.round((extract.window.idleMs ?? 0) / 1000)} s 或满 ${extract.window.windowTurns} 轮就抽取` : '—' }),
+          h(KV, { k: '待抽取', v: extract?.window?.pending?.length
+            ? extract.window.pending.map((p) => `${String(p.sessionId).slice(-8)} · ${p.turns} 轮`).join('   ')
+            : '空' }),
           h(KV, { k: '接受的结束原因', v: extract?.endReasons?.join(' / ') }),
           h(KV, { k: '送助手/工具', v: `${extract?.includeAssistant ? '是' : '否'} / ${extract?.includeTools ? '是' : '否'}` }),
           h(KV, { k: '转写预算', v: extract ? `≤ ${extract.maxInputChars} 字符，< ${extract.minTranscriptChars} 跳过` : '—' }),
@@ -321,17 +347,19 @@ function MemoryPanel() {
 
       h(Card, { title: `最近抽取（${extract?.diagnostics?.length ?? 0}）` },
         (extract?.diagnostics?.length ?? 0) === 0
-          ? h('div', { style: S.empty }, '还没有记录。每完成 N 个回合写一条（ok / skipped / failed）。')
+          ? h('div', { style: S.empty }, '还没有记录。窗口安静下来（或满窗）后写一条（ok / skipped / failed）。')
           : h('div', { style: S.diag },
               h('span', { style: { ...S.k, fontWeight: 600 } }, '时间'),
-              h('span', { style: { ...S.k, fontWeight: 600 } }, '回合'),
+              h('span', { style: { ...S.k, fontWeight: 600 } }, '轮数'),
               h('span', { style: { ...S.k, fontWeight: 600 } }, '字符'),
               h('span', { style: { ...S.k, fontWeight: 600 } }, '结果'),
               extract.diagnostics.flatMap((d, i) => [
-                h('span', { key: `t${i}`, style: S.mono }, new Date(d.at).toLocaleString()),
-                h('span', { key: `s${i}`, style: S.mono }, `@${d.seq}`),
+                h('span', { key: `t${i}`, style: S.mono, title: d.seq === null || d.seq === undefined ? '' : `seq @${d.seq}` },
+                  new Date(d.at).toLocaleString()),
+                h('span', { key: `s${i}`, style: S.mono }, String(d.turns ?? '—')),
                 h('span', { key: `c${i}`, style: S.mono }, String(d.transcriptChars ?? '—')),
-                h('span', { key: `o${i}`, style: { ...S.mono, color: outcomeTone(d.outcome) }, title: d.outcome }, d.outcome),
+                h('span', { key: `o${i}`, style: { ...S.mono, color: outcomeTone(d.outcome) }, title: d.outcome },
+                  `${d.recovered === true ? '↻ ' : ''}${d.outcome}`),
               ]),
             ),
       ),
