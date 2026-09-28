@@ -1,0 +1,41 @@
+# dsh-memvault bundle patch。
+#
+# 只插一行 host 插件：它向 `ctx.systemPrompt` 注册一个**动态 runtime 上下文**贡献
+# （`memvault:core`），把 MemVault 的核心记忆块注入 system prompt。
+#
+# 为什么不用 MCP：MemVault 是 stdio MCP server，MCP 是 pull 协议——服务端无法把任何
+# 东西塞进模型上下文，只能被调用。注入必须由客户端做，也就是这里。
+#
+# 注意：这里**不**注册 MCP 客户端行。MemVault 的 MCP 工具已由 dsh-mcp-connector 以
+# stdio 方式接入；此处再插一行会造成 serverName 重复，让后加载者失败
+# （dsh-project-hub 的 patch 里记过同样的坑）。
+- insert:
+    - id: memvault-core-context
+      name: 'dsh-memvault'
+      config:
+        # MemVault 的库文件（与项目 .env 的 MEMVAULT_DB_PATH 一致）
+        dbPath: 'D:/Claude_code/memory/data/memvault.db'
+        # 核心块按 (scope_type, scope_id) 键控，必须显式给出两边
+        scopes:
+          - { type: user, id: lenovo }
+          - { type: agent, id: claude-code-memory }
+        # 只注入这些 label；留空 = 该作用域下全部块
+        labels: []
+        maxChars: 4000
+        refreshMs: 30000
+        # 写入端：每 N 轮把这个回合的对话交给 MemVault（它自己做 LLM 抽取 + 向量化）。
+        # 一次 = 起一个 Python 进程 + 一次真实 LLM 调用，所以有节流；0 轮即关闭。
+        extract:
+          enabled: true
+          # 每个完成的回合抽取一次
+          everyNTurns: 3
+          # 默认只送用户回合：助手台词会污染抽取（实测抽出过「智能体运行在 DSH 上」这类）
+          includeAssistant: false
+          includeTools: false
+          maxInputChars: 6000
+          minTranscriptChars: 40
+          timeoutMs: 120000
+          pythonPath: 'D:/Claude_code/memory/.venv/Scripts/python.exe'
+          projectDir: 'D:/Claude_code/memory'
+          user: lenovo
+          agent: claude-code-memory

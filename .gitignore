@@ -1,0 +1,8 @@
+node_modules/
+*.log
+*.tgz
+
+# local runtime state (never belongs in the repo)
+.venv/
+data/
+state.json
