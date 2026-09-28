@@ -285,6 +285,9 @@ try {
   check('the read half reports its budget and TTL',
     first.body.read.maxChars === 4000 && first.body.read.refreshMs === 30000)
   check('the payload says the panel may write', first.body.writable === true)
+  check('a clean config reports no issues',
+    first.body.configIssues.unknown.length === 0 && first.body.configIssues.problems.length === 0,
+    JSON.stringify(first.body.configIssues))
   check('the payload reports the window policy and an empty window',
     first.body.extract.window.everyNTurns === 3 && first.body.extract.window.idleMs === 20000
     && first.body.extract.window.windowTurns === 8 && Array.isArray(first.body.extract.window.pending)
@@ -403,6 +406,34 @@ try {
   check('with extraction disabled the window is still reported (empty)',
     Array.isArray(readOnlyStatus.body.extract.window.pending)
     && readOnlyStatus.body.extract.window.pending.length === 0)
+
+  // A config with a typo and a bad value: the plugin keeps running on defaults,
+  // and the panel is what makes the mistake visible.
+  const issueChildren = []
+  applyHost({ ...ctx, inject: (deps, cb) => issueChildren.push({ deps, cb }) }, {
+    dbPath,
+    maxChars: 'not-a-number',
+    nope: 1,
+    extract: { enabled: false, statePath, wat: 2 },
+  })
+  const issueRoutes = new Map()
+  issueChildren[0].cb({
+    effect: (fn) => fn(),
+    webServer: { register: (r) => { issueRoutes.set(r.path, r); return () => {} } },
+  })
+  const issueStatus = { code: null, body: null }
+  await issueRoutes.get(STATUS_PATH).handler(
+    { headers: { host: '127.0.0.1:19387' }, method: 'GET' },
+    { writeHead(code) { issueStatus.code = code }, end(payload) { issueStatus.body = JSON.parse(payload) } },
+  )
+  check('an unknown key is reported to the panel',
+    issueStatus.body.configIssues.unknown.includes('nope')
+    && issueStatus.body.configIssues.unknown.includes('extract.wat'),
+    JSON.stringify(issueStatus.body.configIssues.unknown))
+  check('a wrong-typed value is reported and the default survives',
+    issueStatus.body.configIssues.problems.some((p) => p.startsWith('maxChars'))
+    && issueStatus.body.read.maxChars === 4000,
+    JSON.stringify({ problems: issueStatus.body.configIssues.problems, maxChars: issueStatus.body.read.maxChars }))
 
   // A broken store degrades, it does not throw.
   const brokenCtx = { ...ctx, systemPrompt: { context(spec) { contexts.push(spec); return () => {} } } }

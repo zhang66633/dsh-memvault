@@ -9,6 +9,10 @@
 # 注意：这里**不**注册 MCP 客户端行。MemVault 的 MCP 工具已由 dsh-mcp-connector 以
 # stdio 方式接入；此处再插一行会造成 serverName 重复，让后加载者失败
 # （dsh-project-hub 的 patch 里记过同样的坑）。
+#
+# 下面每一个字段都在 `lib/config.js` 里只描述一次：代码默认值、DSH 用来校验的
+# `Config` schema、Plugins 页的设置项都由那一份 spec 产出。写错键名或类型时，
+# 插件会照常跑（用默认值）并把问题显示在面板上。
 - insert:
     - id: memvault-core-context
       name: 'dsh-memvault'

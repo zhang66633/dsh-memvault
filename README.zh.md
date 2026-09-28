@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.6.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -44,6 +44,7 @@
 | 💾 **窗口跨重启不丢** | 等着的窗口（渲染后的转写文本，有界）每来一轮就写进状态文件，所以轮与轮之间重启不会静默丢记忆；挂载时仍在等待的窗口会被抽取，并在诊断里标成 recovered |
 | 🎭 **角色过滤** | 默认不送助手台词与工具流量——送它们曾把模型自己的话存成「关于用户的事实」 |
 | 🪶 **零运行时依赖** | 就是 harness 插件协议上的裸 ESM：`node:sqlite`、`node:child_process`、`node:fs`。没有要装的东西；浏览器半边是照着 ModuleLoader 封装手写的，不引入打包器 |
+| 🧾 **每个旋钮只描述一次** | 一份 spec（`lib/config.js`）同时产出代码默认值、DSH 用来校验的 `Config` schema、以及 Plugins 页渲染的设置项——默认值之间不可能互相漂移，patch 里写错的键/值也会出现在面板上而不是只进 host 日志 |
 | 🎛️ **一个真面板** | 会话页签环里的 **记忆** 页签 + Settings → Plugins 里的一页：当前注入的块（label、作用域、字符数与它的存储上限、原文）、读预算与缓存年龄、抽取旋钮、有水位线的会话数、最近 5 次抽取结果，外加一个跳过 30 秒 TTL 的 **立即重读** 按钮 |
 | ✏️ **核心块可编辑** | 每个块都有 编辑 / 删除，另有一个新增表单。写入是按 `(scope_type, scope_id, label)` 的 upsert，写完立刻让渲染缓存失效，所以下一步就已经看得到；`panel.writes: false` 可以把整个面板变回只读 |
 | 🖥️ **host 半边不需要浏览器** | 面板是可选的：`webServer` 用 `ctx.inject` 取，所以无头组合照样注入记忆，只是永远不会注册那两条路由 |
@@ -100,7 +101,9 @@ npm test          # lib/client.js 过期会直接失败
 
 ## ⚙️ 配置
 
-所有值都有代码默认；在 `cordis.patch.yml` 里给 `config` 即可覆盖。
+每个旋钮只在 **`lib/config.js` 里描述一次**：类型、边界、默认值、说明。代码默认值（`DEFAULT_EXTRACT` 等）、DSH 校验用的 `Config` schema、以及面板显示的「当前配置」全都由那一份描述产出。下面的表就是它的散文版。
+
+设置方式没变——还是 `cordis.patch.yml` 里的 `config`。变的是**写错时的表现**：类型不对的值会被报告（并回落到默认值），未声明的键会被报告，两者都会以警告横幅出现在面板上，而不只是躺在 host 日志里。
 
 ### 读半边
 
@@ -152,6 +155,15 @@ npm test          # lib/client.js 过期会直接失败
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `panel.writes` | `true` | `false` 让面板只读：`/memvault/api/blocks` 直接回 403，不再跑 CLI |
+
+### Config schema
+
+`lib/schema.js` 从同一份 spec 构建原生 Schemastery schema 并导出为 `Config`——这正是 DSH 从插件模块上读的那个名字。两个后果：
+
+- **校验**：不符合 schema 的配置会让该行**无法激活**（DSH 的既定行为），所以 schema 比解析器更严是刻意的——类型与边界在插件跑起来之前就被拦住。
+- **设置页**：`dsh --dump-config-schema` 与 Plugins 页把同一份 schema 投影成 JSON Schema，字段就是这么渲染出来的。
+
+`@deepseek-ai/schemastery` 由 DSH 运行时提供，本包把它声明为 peer。这个 import 只尝试一次、缺失时容忍，因为随包的 smoke 测试跑在裸 Node 上：没有 DSH 时插件不导出 `Config`、照常加载，并会警告自己没有设置页。在 DSH 里它总能解析成功。
 
 ## 🏗️ 工作原理
 
@@ -215,12 +227,15 @@ flowchart LR
 不需要 DSH，也不需要浏览器：
 
 ```bash
-npm test              # 四个套件全跑
+npm test              # 五个套件全跑
 npm run smoke:package # 包/bundle 契约：manifest、patch 行、导出、peer 声明、bundle id
+npm run smoke:config  # 配置 spec、解析器，以及由它构建的原生 schema
 npm run smoke         # 读取器 / 格式化器 / 预算契约（对真实库只读）
 npm run smoke:extract # 转写渲染 / 边界切片 / 事件缓冲 / 水位 + 真实端到端写入（临时库）
-npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动两条路由，并在 stub ModuleLoader 下真跑一遍客户端产物
+npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动每条路由，并在 stub ModuleLoader 下真跑一遍客户端产物
 ```
+
+`smoke:config` 就是那个「不许存在第三份默认值」的守卫：它断言 `DEFAULT_EXTRACT` **就是** spec 默认值、原生 schema 在空配置下校验出来的结果与那些默认值逐字段相等，以及**随包发布的 `cordis.patch.yml`** 解析后没有任何未声明键、没有任何类型问题。它已经赚回过成本——见 [DEVLOG](docs/DEVLOG.md) §9。
 
 面板的行为是 `smoke:panel` 钉住的：TTL 未到期时必须返回旧渲染（即使期间库里多了一行），`POST /refresh` 必须把那行捞进来，不可信的 `Host`/`Origin` 必须 403，handler 抛错必须变成 500 而不是 reject，库读不了必须仍然 200 并带上上次知道的块，而入库的 `lib/client.js` 必须等于 `src/client/index.js` 构建出来的结果。它的写半边跑的是**对临时库的真实 CLI 写入**：路由建一个块、同 label 再写一次必须是 upsert 而不是第二个块、删除必须删掉、`panel.writes: false` 必须回 403，以及看起来像选项的值（`--not-a-flag`）必须作为数据穿过 argv 解析。
 
@@ -250,6 +265,10 @@ npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动�
 
 **为什么等待中的窗口要落盘。** 窗口化把「在途」时间从一轮拉长到最多八轮加一个空闲计时器，只存在内存里的东西恰恰就是重启会丢的东西。落盘的只有渲染后的转写文本，受 `maxInputChars` 约束，且只保留最新的几个会话——文件始终很小；恢复的抽取会在诊断里带 `recovered: true`，让它可见而不是神秘。
 
+**为什么配置写成 spec，而不只是写一份 schema。** 只写 schema 等于让默认值有第四个住处（常量、patch、README、schema）。把每个旋钮描述一次——类别、边界、默认值、说明——代码默认值、校验、设置页就都能派生出来，同时给了解析器一个**零依赖**的输入。唯一必须手工保持一致的只有 `window.js` 里那份独立默认值，所以有一条测试专门钉它。
+
+**为什么 schema 的 import 是可选的。** `@deepseek-ai/schemastery` 由 DSH 运行时提供，不属于本包。静态 import 会让模块——进而是每一个 smoke 测试——在裸 Node 上根本加载不了，而读取器、窗口、面板、契约四套测试恰恰都跑在那里。所以只尝试一次，成功才导出 `Config`，失败时 `apply()` 会明确警告。DSH 永远不会走到那条路；测试会，而且只要机器上真有 Schemastery，它们就用真的验。
+
 **为什么面板写入也走 CLI。** 核心块写起来很便宜——不调 LLM、不做向量化，与 memory 不同——但它仍然必须经过 MemVault 自己的 `core_append`：upsert 语义、`block.updated` 事件、`value_limit` 都在那里。直接 `INSERT` 会同时跳过这三样。CLI 把 value 当 argv 位置参数，所以面板把上限卡在 8000 字符，并在位置参数前放 `--`：`--not-a-flag` 这种值必须仍然是数据。
 
 **为什么面板的校验比 MemVault 更严。** 多两条拒绝，都是针对「否则会静默无事发生」的失败：空值（提示词读取器会跳过空块，写进去等于什么都没做）和超过 8000 字符的值（argv 长度限制是真实的）。其余判断都交给 MemVault，它仍然是唯一的事实来源。
@@ -265,7 +284,6 @@ npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动�
 
 ## 🗺️ 路线图
 
-- **配置 schema** —— 让 Plugins 页能直接编辑这些旋钮，而不是手写 patch（面板那一页就是它天然的位置）。
 - **面板里浏览记忆** —— 第二个页签展示 `memory_search` 的结果，沿用核心块那套只读纪律。
 - **抽取质量反馈** —— 面板已经能看出每个窗口抽出了什么，下一步是让它能把一次糟糕的抽取反馈回 MemVault。
 

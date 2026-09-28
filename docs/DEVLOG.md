@@ -215,7 +215,52 @@ npm test   # smoke:package + smoke + smoke:extract 三套全绿
 
 ---
 
-## 9. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
+## 9. 0.6.0：配置 schema（一份描述，三处产出）
+
+需求：旋钮已经 16 个以上，手写 patch 调参开始变成负担；同时默认值散在常量、patch、README 三处，天然会漂。
+
+### 9.1 先从源码确认机制（规则 ①）
+
+| 结论 | 出处 |
+|---|---|
+| DSH 从插件模块上读的字段就叫 `Config`：`Reflect.get(plugin, "Config")` | `dsh-app-boot` 源码 `configOf` / `collectConfigSchemas` |
+| 「原生 schema」的判据是三条：`Reflect.get(value, Symbol.for('schemastery')) === true`、`typeof value.type === 'string'`、`meta` 是非 null 对象 | 同上 `isNativeConfigSchema` |
+| 不是原生 schema 时：`entry.status` 不置为 `schema`，并记一条 "Config is not a native Schemastery schema" | 同上 |
+| `generateConfigSchema(profile, layers, installAnchor)` 把 schema 投影成 JSON Schema（`x-cordis` 下带 refs） | 同文件导出表 + 定义 |
+| 本机有一份**文件系统上的** `@deepseek-ai/schemastery@3.18.4`（含 `src/index.ts` 与 ESM/CJS 双构建） | `~/.dsh/profiles/node_modules/@deepseek-ai/schemastery` |
+
+用那份真 Schemastery 实测到的语义（不是猜的）：
+
+- `Schema.object({...})` 嵌套：`S({})` 会**填入嵌套默认值**，所以代码侧不必再深合并一遍；
+- `Schema.natural().min(200)` 会以清晰信息拒绝过小值；
+- **`step` 是相对 `min` 计量的**：`isMultipleOf(data, meta.min ?? 0, step)`；
+- `Schema.string().default(null)` 等于「没有默认值」，该键在输出里消失；`dict` 的默认值是 `{}`，必须显式 `.default(...)` 才能带上自己的默认字典。
+
+### 9.2 设计
+
+- **`lib/config.js`：一份 spec（零外部依赖）**——每字段 `{ kind, default, description, min?, max?, step?, role?, integer? }`。从它派生：`configDefaults()`（代码默认值）、`resolveConfig()`（宽容解析：合并、强制转换数字字符串、报告未知键与类型错误，永不抛）。
+- **`lib/schema.js`：把同一份 spec 变成原生 schema**，导出为 `Config`。`buildConfigSchema(Schema, spec)` 是纯函数，所以测试可以拿真 Schemastery 喂它。
+- **import 是可选的**（`try { await import('@deepseek-ai/schemastery') } catch {}`）：这个包由 DSH 运行时提供。静态 import 会让**每一个** smoke 测试在裸 Node 上加载不了插件模块——那是本轮最不能接受的代价。DSH 里永远解析得到；解析不到时 `Config` 为 `undefined`（DSH 视作「没声明 schema」，插件照常加载）并且 `apply()` 明确警告一次。
+- **`window.js` 的默认值**保持独立（它不依赖任何东西），由测试断言与 spec 一致——这是唯一保留的重复常量。
+- **面板**新增两条警告横幅（未知键 / 类型错误），因为这些错误以前只会进 host 日志。
+
+### 9.3 验证（规则 ③，新增 `scripts/smoke-config.mjs`）
+
+- spec 本身：默认值、描述齐全、每个节点的 kind 都被构建器实现、数字字段声明 integer、**`step` 必须整除 `min` 与默认值之差**；
+- 单一事实来源：`DEFAULT_EXTRACT === configDefaults().extract`、`window.js` 与 spec 一致、`DEFAULT_DB_PATH`/`DEFAULT_SCOPES`/`DEFAULT_STATE_PATH` 都来自各自模块；
+- 解析器：空配置＝默认值、嵌套合并、数字字符串强制转换并报告、未知键报告并忽略、类型错误回落并报告、dict 过滤非字符串、`null` 视为「未设置」；
+- **真 Schemastery**（本机有则跑，没有则 `[SKIP]` 并打印搜索路径）：schema 通过 app-boot 的三条原生判据、**空配置校验结果与代码默认值逐字段相等**、部分配置填默认、越界与类型错误被拒、描述进入 metadata、`toJSON()` 图里能找到窗口旋钮；
+- **随包 patch**：用 DSH 那份 `js-yaml` 解析 `cordis.patch.yml`，断言没有任何未声明键、没有任何类型问题。
+
+### 9.4 这条测试立刻赚回了成本
+
+第一次跑就红了，而且是**真 bug**：`maxInputChars` 我写了 `step: 500`、`min: 200`、默认 `6000`，而 Schemastery 的 `step` 是相对 `min` 判定的——`6000 - 200 = 5800` 不是 500 的倍数，**校验会直接失败**。如果没这条测试，这次改动会在用户重启后让 `Config` 校验不通过、插件行无法激活，症状是「记忆突然不再注入」。修法是 `step: 100`（`5800 % 100 === 0`），并把这条规则写成断言，让以后任何新旋钮都逃不过。
+
+另外两处也由测试暴露：`dict` 需要显式 `.default()`（否则 `env` 的默认字典消失），`run` 的默认 `null` 在 schema 里会被当作「无默认」而整个键消失——改成 `''`（空值即省略该 CLI 标志），两边语义就一致了。
+
+---
+
+## 10. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
 
 要「优先参考源码」时，DSH 的包都在 `app.asar` 这个打包文件里，asar 只是「JSON 头 + 拼接的文件数据」：
 

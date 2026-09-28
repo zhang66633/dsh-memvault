@@ -80,6 +80,16 @@ check('declares at least one compatibility-checked DSH peer',
 check('every injected service has a declared DSH peer',
   mod.inject.every((service) => peers.includes(`@deepseek-ai/dsh-${service.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`)),
   peers.join(', '))
+check('declares the Schemastery peer the Config schema is built from',
+  peers.includes('@deepseek-ai/schemastery'), peers.join(', '))
+// The Loader reads `Config` off the plugin module. It is `undefined` outside a DSH
+// runtime (that is the documented fallback), so the contract to pin is that the
+// name exists and the schema module ships.
+check('exports a Config name for the Loader to read', 'Config' in mod,
+  mod.Config === undefined ? 'undefined here (no DSH runtime), which the Loader accepts' : `type=${mod.Config?.type}`)
+check('the schema module ships in the package', (pkg.files ?? []).includes('lib'))
+check('a config spec exists as the single source of defaults',
+  existsSync(join(root, 'lib/config.js')) && typeof mod.DEFAULT_EXTRACT === 'object')
 check('peer ranges are non-empty strings',
   Object.values(pkg.peerDependencies ?? {}).every((r) => typeof r === 'string' && r.trim() !== ''))
 check('DshPackageManifest format version declared', pkg.dsh?.manifestVersion === 1)

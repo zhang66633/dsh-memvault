@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.6.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -44,6 +44,7 @@ The plugin does three things:
 | 💾 **Restart-safe window** | The waiting window (its rendered transcript, bounded) is written to the state file on every turn, so a restart between turns does not silently drop memories; anything still pending is extracted on mount and marked as recovered |
 | 🎭 **Role filtering** | Assistant prose and tool traffic are excluded by default — shipping them stored the model's own words as "facts about the user" |
 | 🪶 **Zero runtime dependencies** | Plain ESM over the harness plugin protocol: `node:sqlite`, `node:child_process`, `node:fs`. Nothing to install, and the browser half is hand-written against the ModuleLoader envelope instead of being bundled |
+| 🧾 **Every knob described once** | One spec (`lib/config.js`) produces the code defaults, the `Config` schema DSH validates against, and the settings the Plugins page renders — so a default cannot drift between them, and a typo in a patch shows up in the panel instead of only in the log |
 | 🎛️ **A real panel** | A **记忆** tab in the conversation ring and a page under Settings → Plugins: the blocks currently injected (label, scope, characters against their stored limit, text), the read budget and cache age, the extraction knobs, sessions with a watermark, and the last five extraction outcomes — plus a **立即重读** button that ignores the 30 s render TTL |
 | ✏️ **Editable core blocks** | 编辑 / 删除 on any block, and a form to create one. A write is an upsert keyed by `(scope_type, scope_id, label)`, it drops the render cache so the next step already sees it, and `panel.writes: false` turns the whole thing read-only |
 | 🖥️ **Host half needs no browser** | The panel is optional: `webServer` is taken with `ctx.inject`, so a headless composition still injects memory and simply never registers the routes |
@@ -100,7 +101,16 @@ A brand-new client half is picked up by a **restart** plus a page reload: the bo
 
 ## ⚙️ Configuration
 
-Everything is a code default; a `config` block in `cordis.patch.yml` overrides it.
+Every knob is described **once**, in `lib/config.js`: type, bounds, default and a
+description. From that one description come the code defaults (`DEFAULT_EXTRACT`
+and friends), the `Config` schema DSH validates the entry against and projects for
+the Plugins page, and the panel's view of what is configured. The tables below are
+that description in prose.
+
+Setting values is unchanged — a `config` block in `cordis.patch.yml`. What changed
+is what happens when one is wrong: a value that does not type-check is reported
+(and the default is used), an undeclared key is reported, and both surface as a
+warning banner in the panel rather than only in the host log.
 
 ### Read half
 
@@ -152,6 +162,22 @@ The handlers refuse anything that is not a loopback `Host` with a matching `Orig
 | Field | Default | Meaning |
 |---|---|---|
 | `panel.writes` | `true` | `false` makes the panel read-only: `/memvault/api/blocks` answers 403 instead of running the CLI |
+
+### Config schema
+
+`lib/schema.js` builds a native Schemastery schema from the same spec and exports
+it as `Config`, which is what DSH reads off a plugin module. Two consequences:
+
+- **validation.** A config that fails the schema keeps the entry from activating
+  (DSH's documented behaviour), so the schema is stricter than the resolver on
+  purpose: bounds and types are enforced before the plugin runs.
+- **a settings page.** `dsh --dump-config-schema` and the Plugins page project the
+  same schema into JSON Schema, which is what renders the fields.
+
+`@deepseek-ai/schemastery` comes from the DSH runtime and is declared as a peer.
+The import is attempted once and tolerated when absent, because the bundled smoke
+tests run on plain Node: outside DSH the plugin exports no `Config`, still loads,
+and warns that it has no settings page. In DSH it always resolves.
 
 ## 🏗️ How it works
 
@@ -215,12 +241,19 @@ Panel path, on open and every 15 s:
 No DSH and no browser needed:
 
 ```bash
-npm test              # all four suites
+npm test              # all five suites
 npm run smoke:package # package/bundle contract: manifest, patch row, exports, peers, bundle id
+npm run smoke:config  # the config spec, the resolver, and the native schema built from it
 npm run smoke         # reader + formatter + budget contract, against the real db (read-only)
 npm run smoke:extract # transcript, boundary slicing, event buffer, watermarks, and a REAL end-to-end write into a throwaway db
-npm run smoke:panel   # mounts the plugin on a stub context, drives both routes against a throwaway db, and runs the shipped client bundle under a stub ModuleLoader
+npm run smoke:panel   # mounts the plugin on a stub context, drives every route against a throwaway db, and runs the shipped client bundle under a stub ModuleLoader
 ```
+
+`smoke:config` is the one that keeps the three copies of a default from existing:
+it asserts that `DEFAULT_EXTRACT` *is* the spec default, that the native schema
+validated against `{}` returns exactly those defaults, and that the **shipped
+`cordis.patch.yml`** resolves with nothing unknown and nothing mistyped. It has
+already earned its keep — see §9 of the [DEVLOG](docs/DEVLOG.md).
 
 `smoke:panel` is where the panel's behaviour is actually pinned down: the TTL must serve a stale render while a row written in between exists, `POST /refresh` must pick that row up, an untrusted `Host`/`Origin` must get 403, a throwing handler must become a 500 rather than reject, an unreadable store must still answer 200 with the blocks it last knew, and the shipped `lib/client.js` must equal what `src/client/index.js` builds to. Its write half runs **real CLI writes against a throwaway store**: the route creates a block, an upsert of the same label must not create a second one, a delete removes it, `panel.writes: false` turns the route into a 403, and a value that looks like an option (`--not-a-flag`) must survive argv parsing as data.
 
@@ -250,6 +283,21 @@ The end-to-end step forces the offline embedder and rule extractor in a temporar
 
 **Why the waiting window is written to disk.** Windowed extraction lengthens the "in flight" period from one turn to up to eight plus an idle timer, so anything held only in memory is exactly what a restart drops. Only the rendered transcript is stored, bounded by `maxInputChars`, and only for the newest few sessions — the file stays small, and recovery is marked `recovered: true` in the diagnostics so it is visible rather than mysterious.
 
+**Why the config is a spec rather than just a schema.** A schema alone would have
+to be the fourth place a default lives (constants, patch file, README, schema).
+Describing each knob once — kind, bounds, default, description — lets the code
+defaults, the validation and the settings page all be derived, and gives the
+resolver something dependency-free to work from. The one thing that must stay in
+step by hand is `window.js`'s standalone defaults, so a test asserts they match.
+
+**Why the schema import is optional.** `@deepseek-ai/schemastery` is provided by
+the DSH runtime, not by this package. A static import would make the module — and
+therefore every smoke test — unloadable on plain Node, which is exactly where the
+read, window, panel and contract tests run. So the import is attempted once,
+`Config` is exported only when it succeeds, and `apply()` warns when it did not.
+DSH never hits that path; the tests do, and they verify the schema with the real
+Schemastery whenever the machine has one.
+
 **Why the panel writes through the CLI too.** A core block is cheap to write — no LLM call, no embedding, unlike a memory — but it still has to go through MemVault's own `core_append`, which is what owns the upsert semantics, the `block.updated` event and `value_limit`. A direct SQLite `INSERT` would skip all three. The CLI takes the value as an argv positional, so the panel caps it at 8000 characters and puts `--` before the positionals: a value of `--not-a-flag` has to stay data.
 
 **Why the panel's validation is stricter than MemVault's.** Two extra refusals, both about failures that would otherwise be invisible: an empty value (the prompt reader skips empty blocks, so such a write would look like nothing happened) and a value over 8000 characters (argv limits are real). Everything else is left to MemVault, which stays the source of truth.
@@ -265,7 +313,6 @@ The end-to-end step forces the offline embedder and rule extractor in a temporar
 
 ## 🗺️ Roadmap
 
-- **A config schema** so the Plugins page can edit the knobs instead of a hand-written patch (the panel's page is the natural home for it).
 - **Memory browsing in the panel** — a second tab over `memory_search` results, with the same read-only discipline the core blocks had.
 - **Extraction quality feedback** — the panel already shows what each window produced; the next step is letting it flag a bad extraction back into MemVault.
 

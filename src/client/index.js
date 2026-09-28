@@ -301,6 +301,10 @@ function MemoryPanel() {
       error && h('div', { style: S.banner(C.err) }, error),
       writeError && h('div', { style: S.banner(C.err) }, `写入失败：${writeError}`),
       read?.error && h('div', { style: S.banner(C.warn) }, `读取 ${read.dbPath} 失败：${read.error} —— 继续注入上一次的好文本。`),
+      (data?.configIssues?.problems?.length > 0) && h('div', { style: S.banner(C.warn) },
+        `配置有问题（已按默认值继续）：${data.configIssues.problems.join('；')}`),
+      (data?.configIssues?.unknown?.length > 0) && h('div', { style: S.banner(C.warn) },
+        `配置里有未声明的键（已忽略）：${data.configIssues.unknown.join(', ')}`),
       !writable && h('div', { style: S.banner(C.idle) }, '面板当前为只读（config panel.writes: false）。'),
 
       h(Card, { title: '注入（读半边）' },
