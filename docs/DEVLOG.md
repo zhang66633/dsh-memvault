@@ -260,7 +260,48 @@ npm test   # smoke:package + smoke + smoke:extract 三套全绿
 
 ---
 
-## 10. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
+## 10. 0.7.0：面板里浏览记忆（只读）
+
+需求（路线的最后一块空白）：面板能看「注入了什么」「抽取干了什么」，但看不到**库里到底存了哪些记忆**——只能让模型去调 `memory_search`。
+
+### 10.1 先看库的真实形状（规则 ①）
+
+| 结论 | 出处 |
+|---|---|
+| `memories(id TEXT PK, user_id, agent_id, run_id, memory TEXT NOT NULL, memory_type TEXT DEFAULT 'user', hash, embedding BLOB, metadata TEXT DEFAULT '{}', created_at, updated_at)` | `memvault/storage.py` 的建表脚本 |
+| 索引只有 user_id / agent_id / run_id / hash / created_at——**`memory` 文本列没有索引** | 同上 |
+| MemVault 自己的维护路径用显式列名而不是 `SELECT *`，理由就是 embedding blob | `storage.iter_memory_meta` 的 docstring |
+| 元数据是自由格式的 JSON 文本 | 建表默认值 `'{}'` |
+
+### 10.2 取舍
+
+- **子串浏览，不是语义召回。** 语义排序要 embedder，`memory_search` 的混合模式还要关键词索引；那是模型的工具，面板轮询它等于每次刷新做一次召回。所以：`LIKE` + 有界页（默认 20、上限 200）+ 报告总数 + 载荷里写 `mode: 'substring'`，面板上也把「非语义检索」写在提示里。
+- **绝不 `SELECT *`。** 只取要显示的九列（沿用 MemVault 自己的理由）。实测在作者的真实库（289 条）上浏览完全不碰 embedding。
+- **每个值都是占位符，`%`/`_` 转义。** 搜索「50%」必须只匹配真的含 `50%` 的行；`'; DROP TABLE memories; --` 只是一段查不到东西的文本。测试里两条都断言了（真实库上 `q=%` 返回 10 条而不是全部 289 条）。
+- **宽容而不报错。** 未知 `order` 回落到 `created`、`limit` 夹到 200、负 `offset` 当 0；生效的过滤在 `applied` 里回显——一个静默丢掉过滤条件的浏览比一个说清楚自己干了什么的浏览更糟。
+- **只读。** 删除/修改仍由模型的 `memory_delete`/`memory_update` 或 CLI 负责；面板给「复制 id」把它交出去，而不是自己动手。
+
+### 10.3 验证（规则 ③）
+
+- `lib/memories.js` 纯函数部分：SQL 里不出现任何值（只有占位符）、LIKE 转义、limit/offset 解析与位置、`applied` 回显、上限夹取、未知 order 回落、count 查询与主查询共享过滤但不带分页、超长文本裁剪但报告真实长度、坏 metadata 不炸。
+- 面板端到端（复用抽取测试刚写出的临时库，里面有两条真实记忆）：
+  - 默认浏览返回 2 条、字段集合恰好是那九列、载荷里**没有 embedding**、`mode` 是 substring；
+  - 子串搜「南京」命中 1 条；
+  - `q=%` 返回 0（转义生效）；
+  - `type=user` → 2 条、`type=bogus` → 0 条且 `applied.type` 如实回显；
+  - `limit=1` 与 `limit=1&offset=1` 两条 id 不同、总数都报 2；
+  - 注入形状的查询返回 200、0 条，且**表没被破坏**（再查一次仍是 2 条）；
+  - POST → 405、不可信 Host → 403。
+- 真实库抽查（不进测试）：289 条、子串命中 206 条、`q=%` 10 条、页 2 id 不同、limit 夹到 200。
+
+### 10.4 一处工程教训（写下来避免重犯）
+
+重构客户端时我用「替换 `function MemoryPanel() {` 这一行」的方式插入了新组件，结果把旧组件体**劈成了两半**——它在语法上仍是一个合法的函数调用序列，所以只看 diff 不容易发现。修法是回到原结构再插：先把旧组件体接回去，再把四张卡片包进 `view === 'blocks' ? h(Fragment, null, …) : h(MemoriesView, …)`。
+*教训*：对「函数头」这类结构性锚点做整体替换，比锚在行内文本上更容易把文件切成两段；改完必须**跑一次解析**（本轮用了 `node --check` 与 `new Function(...)` 预检客户端工厂体），而别指望 bundling 会替你报错——它只是把源文件原样包一层。
+
+---
+
+## 11. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
 
 要「优先参考源码」时，DSH 的包都在 `app.asar` 这个打包文件里，asar 只是「JSON 头 + 拼接的文件数据」：
 

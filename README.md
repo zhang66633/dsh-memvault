@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.6.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.7.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -29,7 +29,7 @@ The plugin does three things:
 |---|---|---|
 | **Inject** (read) | Core memory blocks enter the system prompt, visible on **every** step without the model calling a tool | `ctx.systemPrompt.context()` — a dynamic runtime-context contribution (the same channel as `skill-catalog`) |
 | **Extract** (write) | Finished turns accumulate into a window, and the window is handed to MemVault's extraction/embedding pipeline as **one** conversation | `ctx.on('session/event')` → `turn/end` → window → `python -m memvault.cli add --stdin` (idle-triggered) |
-| **Show** (panel) | What is injected right now, what extraction has been doing, and **editing the core blocks themselves** | three exact host routes (`/memvault/api/*`) + a browser half rendered as a conversation tab and a Plugins settings page |
+| **Show** (panel) | What is injected right now, what extraction has been doing, **editing the core blocks**, and **browsing what is actually stored** | five exact host routes (`/memvault/api/*`) + a browser half rendered as a conversation tab and a Plugins settings page |
 
 ## ✨ Features
 
@@ -47,6 +47,7 @@ The plugin does three things:
 | 🧾 **Every knob described once** | One spec (`lib/config.js`) produces the code defaults, the `Config` schema DSH validates against, and the settings the Plugins page renders — so a default cannot drift between them, and a typo in a patch shows up in the panel instead of only in the log |
 | 🎛️ **A real panel** | A **记忆** tab in the conversation ring and a page under Settings → Plugins: the blocks currently injected (label, scope, characters against their stored limit, text), the read budget and cache age, the extraction knobs, sessions with a watermark, and the last five extraction outcomes — plus a **立即重读** button that ignores the 30 s render TTL |
 | ✏️ **Editable core blocks** | 编辑 / 删除 on any block, and a form to create one. A write is an upsert keyed by `(scope_type, scope_id, label)`, it drops the render cache so the next step already sees it, and `panel.writes: false` turns the whole thing read-only |
+| 🔎 **Browse what is stored** | A second view searches the `memories` table by substring with type/scope filters and paging, showing type, scope, age and the id (one click to copy, so a tool call can act on it). It is a **browse**, not retrieval — semantic recall stays with the model's `memory_search` — and it never selects the embedding blob |
 | 🖥️ **Host half needs no browser** | The panel is optional: `webServer` is taken with `ctx.inject`, so a headless composition still injects memory and simply never registers the routes |
 | 🛟 **Fail-soft by design** | An unreadable store serves the last good text and warns once; a broken extraction never fails a turn and never poisons the next one |
 | 🔍 **Observable from outside** | Watermarks and the last five extraction diagnostics are written atomically to one JSON file, so "hook never fired" is distinguishable from "turn too short" from "ran and found nothing" |
@@ -154,6 +155,7 @@ The browser half has no knobs of its own; it reads the two routes the host half 
 | `/memvault/api/refresh` | `POST` | The same payload after dropping the render TTL — the 立即重读 button |
 | `/memvault/api/blocks` | `POST` | One block action through MemVault's CLI: `{ action: 'set', type, id, label, value, limit? }` (upsert) or `{ action: 'delete', type, id, label }` |
 | `/memvault/api/flush` | `POST` | Extract every pending window now (the 立即抽取 button). The answer says how many sessions were handed over; the work stays queued. Answers 405 when extraction is disabled |
+| `/memvault/api/memories` | `GET` | Browse stored memories: `q` (substring), `type`, `user`, `agent`, `run`, `limit` (default 20, capped at 200), `offset`. Answers `{ rows, total, limit, offset, order, applied, mode }` — `applied` echoes what was actually used, and `mode: 'substring'` says out loud that this is not ranked retrieval |
 
 The handlers refuse anything that is not a loopback `Host` with a matching `Origin` (when the browser sends one) and a same-site `Sec-Fetch-Site`, answering 403 otherwise. They are `exact` routes, so they match before the shell's index/`/api` handlers. A bad action, an unknown scope type, an empty value or an over-long value is a 400 before anything is spawned; a CLI failure is a 502.
 
@@ -298,6 +300,10 @@ read, window, panel and contract tests run. So the import is attempted once,
 DSH never hits that path; the tests do, and they verify the schema with the real
 Schemastery whenever the machine has one.
 
+**Why the memory view is a substring browse.** Semantic ranking needs the embedder, and `memory_search`'s hybrid mode needs the keyword index too — that is the model's retrieval tool, and a panel that polled it would cost a retrieval per refresh. A `LIKE` over the text column is honest about being a browse: there is no index on `memories.memory`, so it is a scan, which is why the page is bounded (200 rows), the count is reported, and the payload says `mode: 'substring'`. Every value goes through a placeholder and `%`/`_` are escaped, so a query is a query and never a pattern or a statement.
+
+**Why the browse never selects `*`.** `memories.embedding` is a blob per row; MemVault's own maintenance paths use an explicit column list for exactly that reason (`storage.iter_memory_meta`). Selecting the nine columns the panel displays keeps a browse cheap no matter how large the store is — it reads 289 rows on the author's store without touching a single embedding.
+
 **Why the panel writes through the CLI too.** A core block is cheap to write — no LLM call, no embedding, unlike a memory — but it still has to go through MemVault's own `core_append`, which is what owns the upsert semantics, the `block.updated` event and `value_limit`. A direct SQLite `INSERT` would skip all three. The CLI takes the value as an argv positional, so the panel caps it at 8000 characters and puts `--` before the positionals: a value of `--not-a-flag` has to stay data.
 
 **Why the panel's validation is stricter than MemVault's.** Two extra refusals, both about failures that would otherwise be invisible: an empty value (the prompt reader skips empty blocks, so such a write would look like nothing happened) and a value over 8000 characters (argv limits are real). Everything else is left to MemVault, which stays the source of truth.
@@ -313,8 +319,8 @@ Schemastery whenever the machine has one.
 
 ## 🗺️ Roadmap
 
-- **Memory browsing in the panel** — a second tab over `memory_search` results, with the same read-only discipline the core blocks had.
-- **Extraction quality feedback** — the panel already shows what each window produced; the next step is letting it flag a bad extraction back into MemVault.
+- **Extraction quality feedback** — the panel already shows what each window produced and what the store now holds; the next step is letting it flag a bad extraction back into MemVault.
+- **Deep links between the two views** — from a stored memory back to the window that extracted it (the diagnostics hold the timestamp, not yet the ids).
 
 ## 📄 License
 

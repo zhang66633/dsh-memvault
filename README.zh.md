@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.6.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.7.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -29,7 +29,7 @@
 |---|---|---|
 | **注入（读）** | 核心记忆块进入 system prompt，**每一步**都看得到，模型不必调用任何工具 | `ctx.systemPrompt.context()` —— 动态 runtime 上下文贡献（与 `skill-catalog` 同一条通道） |
 | **抽取（写）** | 完成的回合先攒进一个**窗口**，窗口再作为**一整段对话**交给 MemVault 的抽取/向量化管线 | `ctx.on('session/event')` → `turn/end` → 窗口 → `python -m memvault.cli add --stdin`（安静时触发） |
-| **可视化（面板）** | 此刻注入了什么、抽取最近干了什么，还能**直接改核心块** | 三条 exact host 路由（`/memvault/api/*`）+ 一个浏览器半边，落在会话页签环与 Plugins 设置页 |
+| **可视化（面板）** | 此刻注入了什么、抽取最近干了什么、**直接改核心块**，以及**浏览库里到底存了什么** | 五条 exact host 路由（`/memvault/api/*`）+ 一个浏览器半边，落在会话页签环与 Plugins 设置页 |
 
 ## ✨ 特性
 
@@ -47,6 +47,7 @@
 | 🧾 **每个旋钮只描述一次** | 一份 spec（`lib/config.js`）同时产出代码默认值、DSH 用来校验的 `Config` schema、以及 Plugins 页渲染的设置项——默认值之间不可能互相漂移，patch 里写错的键/值也会出现在面板上而不是只进 host 日志 |
 | 🎛️ **一个真面板** | 会话页签环里的 **记忆** 页签 + Settings → Plugins 里的一页：当前注入的块（label、作用域、字符数与它的存储上限、原文）、读预算与缓存年龄、抽取旋钮、有水位线的会话数、最近 5 次抽取结果，外加一个跳过 30 秒 TTL 的 **立即重读** 按钮 |
 | ✏️ **核心块可编辑** | 每个块都有 编辑 / 删除，另有一个新增表单。写入是按 `(scope_type, scope_id, label)` 的 upsert，写完立刻让渲染缓存失效，所以下一步就已经看得到；`panel.writes: false` 可以把整个面板变回只读 |
+| 🔎 **浏览库里存了什么** | 第二个视图对 `memories` 表做子串检索，带类型/作用域过滤与翻页，并显示类型、作用域、时间与 id（一键复制，方便交给工具调用处理）。它是**浏览**不是召回——语义召回仍然交给模型的 `memory_search`——而且从不 SELECT embedding blob |
 | 🖥️ **host 半边不需要浏览器** | 面板是可选的：`webServer` 用 `ctx.inject` 取，所以无头组合照样注入记忆，只是永远不会注册那两条路由 |
 | 🛟 **设计上软失败** | 库读不了就继续供上一次的好文本并只告警一次；抽取失败绝不让一轮对话失败，也不会污染下一轮 |
 | 🔍 **可在进程外观测** | 水位与最近 5 次抽取诊断原子写入一个 JSON 文件，于是「钩子没触发」「回合太短」「跑了但没抽到」三者可区分 |
@@ -147,6 +148,7 @@ npm test          # lib/client.js 过期会直接失败
 | `/memvault/api/refresh` | `POST` | 丢掉渲染 TTL 之后的同样载荷 —— 也就是「立即重读」按钮 |
 | `/memvault/api/blocks` | `POST` | 通过 MemVault CLI 执行一次块操作：`{ action: 'set', type, id, label, value, limit? }`（upsert）或 `{ action: 'delete', type, id, label }` |
 | `/memvault/api/flush` | `POST` | 立刻抽取所有待抽取窗口（「立即抽取」按钮）。返回交出去了几个会话；真正的工作仍然是排队跑的。抽取关闭时回 405 |
+| `/memvault/api/memories` | `GET` | 浏览已存记忆：`q`（子串）、`type`、`user`、`agent`、`run`、`limit`（默认 20，上限 200）、`offset`。返回 `{ rows, total, limit, offset, order, applied, mode }`——`applied` 回显实际生效的过滤，`mode: 'substring'` 明说这不是排序召回 |
 
 三个 handler 都会拒绝非 loopback `Host`、`Origin` 不匹配（浏览器发了才有）、以及 `Sec-Fetch-Site: cross-site` 的请求（回 403）。它们是 `exact` 路由，所以先于 shell 的 index/`/api` handler 命中。非法 action、非法的作用域类型、空值、超长值都在起进程之前就回 400；CLI 失败回 502。
 
@@ -269,6 +271,10 @@ npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动�
 
 **为什么 schema 的 import 是可选的。** `@deepseek-ai/schemastery` 由 DSH 运行时提供，不属于本包。静态 import 会让模块——进而是每一个 smoke 测试——在裸 Node 上根本加载不了，而读取器、窗口、面板、契约四套测试恰恰都跑在那里。所以只尝试一次，成功才导出 `Config`，失败时 `apply()` 会明确警告。DSH 永远不会走到那条路；测试会，而且只要机器上真有 Schemastery，它们就用真的验。
 
+**为什么记忆视图是子串浏览。** 语义排序需要 embedder，`memory_search` 的混合模式还需要关键词索引——那是模型的检索工具，让面板轮询它等于每次刷新都做一次召回。对文本列做 `LIKE` 则诚实地表明「这是浏览」：`memories.memory` 上没有索引，所以它就是全表扫描，因此页大小有上限（200 行）、会报告总数、载荷里写着 `mode: 'substring'`。每个值都走占位符，`%`/`_` 被转义，所以查询永远是查询，不会变成模式或语句。
+
+**为什么浏览绝不 `SELECT *`。** `memories.embedding` 是每行一个 blob；MemVault 自己的维护路径正是为此用显式列名（`storage.iter_memory_meta`）。只取面板要显示的九列，无论库多大浏览都很便宜——在作者的库上读 289 行而不碰任何一个 embedding。
+
 **为什么面板写入也走 CLI。** 核心块写起来很便宜——不调 LLM、不做向量化，与 memory 不同——但它仍然必须经过 MemVault 自己的 `core_append`：upsert 语义、`block.updated` 事件、`value_limit` 都在那里。直接 `INSERT` 会同时跳过这三样。CLI 把 value 当 argv 位置参数，所以面板把上限卡在 8000 字符，并在位置参数前放 `--`：`--not-a-flag` 这种值必须仍然是数据。
 
 **为什么面板的校验比 MemVault 更严。** 多两条拒绝，都是针对「否则会静默无事发生」的失败：空值（提示词读取器会跳过空块，写进去等于什么都没做）和超过 8000 字符的值（argv 长度限制是真实的）。其余判断都交给 MemVault，它仍然是唯一的事实来源。
@@ -284,8 +290,8 @@ npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动�
 
 ## 🗺️ 路线图
 
-- **面板里浏览记忆** —— 第二个页签展示 `memory_search` 的结果，沿用核心块那套只读纪律。
-- **抽取质量反馈** —— 面板已经能看出每个窗口抽出了什么，下一步是让它能把一次糟糕的抽取反馈回 MemVault。
+- **抽取质量反馈** —— 面板已经能看出每个窗口抽出了什么、库里现在存了什么，下一步是让它能把一次糟糕的抽取反馈回 MemVault。
+- **两个视图之间的深链** —— 从某条已存记忆回溯到抽取它的那个窗口（目前诊断里只有时间戳，还没有 id）。
 
 ## 📄 许可
 

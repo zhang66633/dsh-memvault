@@ -26,6 +26,7 @@ import {
   BLOCK_VALUE_CLAMP,
   FLUSH_PATH,
   MAX_BODY_BYTES,
+  MEMORIES_PATH,
   REFRESH_PATH,
   STATUS_PATH,
   buildStatus,
@@ -33,6 +34,14 @@ import {
   isTrustedRequest,
   readJsonBody,
 } from '../lib/panel.js'
+import {
+  DEFAULT_LIMIT,
+  MAX_LIMIT,
+  MEMORY_TEXT_CLAMP,
+  buildMemoryQuery,
+  readMemories,
+  shapeMemoryRow,
+} from '../lib/memories.js'
 import {
   BLOCK_LABEL_MAX,
   BLOCK_VALUE_MAX,
@@ -179,6 +188,52 @@ check('a missing host is refused', !isTrustedRequest({}))
     res.code === 400 && res.body.ok === false, `code=${res.code}`)
 }
 
+// ── the browse query builder (pure) ─────────────────────────────────────────
+{
+  const plain = buildMemoryQuery({})
+  check('a bare browse selects the display columns, newest first, and a page',
+    plain.sql.startsWith('SELECT id, user_id, agent_id, run_id, memory, memory_type, metadata, created_at, updated_at FROM memories')
+    && plain.sql.includes('ORDER BY created_at DESC')
+    && plain.sql.endsWith('LIMIT ? OFFSET ?')
+    && plain.limit === DEFAULT_LIMIT && plain.offset === 0,
+    plain.sql)
+
+  const searched = buildMemoryQuery({ q: "50%_x\\y'; DROP TABLE memories; --", type: 'user', user: 'lenovo', limit: '7', offset: '3' })
+  check('every value is a placeholder, never interpolated',
+    !searched.sql.includes('DROP') && !searched.sql.includes('lenovo')
+    && searched.sql.includes("memory LIKE ? ESCAPE '\\'") && searched.sql.includes('memory_type = ?')
+    && searched.sql.includes('user_id = ?'),
+    searched.sql)
+  check('LIKE wildcards in the query are escaped',
+    searched.args[0] === "%50\\%\\_x\\\\y'; DROP TABLE memories; --%",
+    String(searched.args[0]))
+  check('limit and offset are parsed and appended after the filters',
+    searched.limit === 7 && searched.offset === 3
+    && searched.args.at(-2) === 7 && searched.args.at(-1) === 3,
+    JSON.stringify(searched.args))
+  check('the applied filters are echoed back',
+    searched.applied.q.startsWith('50%') && searched.applied.type === 'user' && searched.applied.user === 'lenovo'
+    && searched.applied.agent === null,
+    JSON.stringify(searched.applied))
+
+  const clamped = buildMemoryQuery({ limit: '9999', offset: '-5', order: 'nope' })
+  check('limit is capped, a negative offset is ignored, an unknown order falls back',
+    clamped.limit === MAX_LIMIT && clamped.offset === 0 && clamped.order === 'created'
+    && clamped.sql.includes('ORDER BY created_at DESC'),
+    `limit=${clamped.limit} offset=${clamped.offset} order=${clamped.order}`)
+  check('the updated order sorts by updated_at',
+    buildMemoryQuery({ order: 'updated' }).sql.includes('ORDER BY updated_at DESC, id DESC'))
+  check('a count query shares the filters but not the page',
+    buildMemoryQuery({ q: 'x', limit: 5 }).countSql === 'SELECT COUNT(*) AS n FROM memories WHERE memory LIKE ? ESCAPE \'\\\'',
+    buildMemoryQuery({ q: 'x', limit: 5 }).countSql)
+
+  check('a long memory is clamped for display but reports its length',
+    shapeMemoryRow({ id: 'm1', memory: 'x'.repeat(MEMORY_TEXT_CLAMP + 50), memory_type: 'user' }).chars === MEMORY_TEXT_CLAMP + 50
+    && shapeMemoryRow({ id: 'm1', memory: 'x'.repeat(MEMORY_TEXT_CLAMP + 50) }).memory.length === MEMORY_TEXT_CLAMP + 1)
+  check('broken metadata does not break the row',
+    shapeMemoryRow({ id: 'm', memory: 'a', metadata: '{not json' }).metadata === null)
+}
+
 // ── the real thing: mount on a stub cordis ctx against a throwaway db ────────
 const dir = mkdtempSync(join(tmpdir(), 'dsh-memvault-panel-'))
 try {
@@ -250,8 +305,9 @@ try {
     children.length === 1 && children[0].deps.join(',') === 'webServer', JSON.stringify(children.map((c) => c.deps)))
 
   children[0].callback(childCtx)
-  check('all four exact routes are registered',
-    routes.has(STATUS_PATH) && routes.has(REFRESH_PATH) && routes.has(BLOCKS_PATH) && routes.has(FLUSH_PATH),
+  check('all five exact routes are registered',
+    routes.has(STATUS_PATH) && routes.has(REFRESH_PATH) && routes.has(BLOCKS_PATH)
+    && routes.has(FLUSH_PATH) && routes.has(MEMORIES_PATH),
     [...routes.keys()].join(', '))
 
   const call = async (path, method = 'GET', body = null, headers = { host: '127.0.0.1:19387' }) => {
@@ -564,6 +620,64 @@ try {
     check('the extracted facts are in the store',
       rows.length >= 1 && rows.some((r) => typeof r.memory === 'string'),
       JSON.stringify(rows.map((r) => r.memory)))
+
+    // ── the browse route, against the store extraction just wrote ────────────
+    const browse = async (url = MEMORIES_PATH, method = 'GET', headers = { host: '127.0.0.1:19387' }) => {
+      const out = { code: null, body: null }
+      await windowRoutes.get(MEMORIES_PATH).handler(
+        { headers, method, url },
+        { writeHead(code) { out.code = code }, end(payload) { out.body = JSON.parse(payload) } },
+      )
+      return out
+    }
+    const page = await browse()
+    check('the browse route returns the stored memories',
+      page.code === 200 && page.body.ok === true && page.body.total === 2 && page.body.rows.length === 2,
+      `total=${page.body.total} rows=${page.body.rows.length}`)
+    check('the payload never carries the embedding blob',
+      !JSON.stringify(page.body).includes('embedding')
+      && Object.keys(page.body.rows[0]).sort().join(',')
+        === 'agent,chars,createdAt,id,memory,metadata,run,type,updatedAt,user',
+      Object.keys(page.body.rows[0]).join(','))
+    check('the payload says this is a substring browse, not retrieval', page.body.mode === 'substring')
+
+    const hit = await browse(`${MEMORIES_PATH}?q=${encodeURIComponent('南京')}`)
+    check('a substring search finds the row extraction produced',
+      hit.body.total === 1 && hit.body.rows[0].memory.includes('南京'), JSON.stringify(hit.body.applied))
+
+    const literal = await browse(`${MEMORIES_PATH}?q=${encodeURIComponent('%')}`)
+    check('a literal % is a literal, not a wildcard', literal.body.total === 0, `total=${literal.body.total}`)
+
+    const typed = await browse(`${MEMORIES_PATH}?type=user`)
+    const bogus = await browse(`${MEMORIES_PATH}?type=bogus`)
+    check('the type filter applies and is echoed',
+      typed.body.total === 2 && typed.body.applied.type === 'user'
+      && bogus.body.total === 0 && bogus.body.applied.type === 'bogus',
+      `${typed.body.total} / ${bogus.body.total}`)
+
+    const firstPage = await browse(`${MEMORIES_PATH}?limit=1`)
+    const secondPage = await browse(`${MEMORIES_PATH}?limit=1&offset=1`)
+    check('paging walks the store without repeating a row',
+      firstPage.body.rows.length === 1 && secondPage.body.rows.length === 1
+      && firstPage.body.total === 2 && secondPage.body.total === 2
+      && firstPage.body.rows[0].id !== secondPage.body.rows[0].id,
+      `${firstPage.body.rows[0].id} vs ${secondPage.body.rows[0].id}`)
+    check('the page size is capped',
+      (await browse(`${MEMORIES_PATH}?limit=9999`)).body.limit === MAX_LIMIT)
+
+    const injection = await browse(`${MEMORIES_PATH}?q=${encodeURIComponent("'; DROP TABLE memories; --")}`)
+    const after = await browse()
+    check('an injection-shaped query is just a query',
+      injection.code === 200 && injection.body.total === 0 && after.body.total === 2,
+      `total after=${after.body.total}`)
+
+    check('the browse route is GET only', (await browse(MEMORIES_PATH, 'POST')).code === 405)
+    check('the browse route refuses an untrusted host',
+      (await browse(MEMORIES_PATH, 'GET', { host: 'evil.example' })).code === 403)
+
+    const direct = readMemories({ dbPath: windowDb, query: { q: '南京' } })
+    check('the reader is usable outside the route too',
+      direct.rows.length === 1 && direct.limit === DEFAULT_LIMIT, `rows=${direct.rows.length}`)
   }
 } finally {
   rmSync(dir, { recursive: true, force: true })

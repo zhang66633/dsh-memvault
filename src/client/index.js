@@ -18,7 +18,7 @@
  *
  * @module dsh-memvault/client
  */
-const { createElement: h, useEffect, useState } = require('react')
+const { createElement: h, Fragment, useEffect, useState } = require('react')
 
 /** Must equal the package name: it is the bundle id the host serves under /plugins. */
 const NAME = 'dsh-memvault'
@@ -27,6 +27,7 @@ const STATUS_URL = '/memvault/api/status'
 const REFRESH_URL = '/memvault/api/refresh'
 const BLOCKS_URL = '/memvault/api/blocks'
 const FLUSH_URL = '/memvault/api/flush'
+const MEMORIES_URL = '/memvault/api/memories'
 const POLL_MS = 15000
 
 const C = {
@@ -195,7 +196,134 @@ function AddBlock({ writable, busy, onWrite, defaults }) {
   )
 }
 
+const TYPE_LABEL = { user: '用户', agent: '智能体', procedural: '程序性' }
+const PAGE_SIZES = [10, 20, 50, 100]
+
+/** Copy a memory id, so it can be handed to a tool call without selecting text. */
+function CopyId({ id }) {
+  const [copied, setCopied] = useState(false)
+  return h('button', {
+    style: S.small(copied ? C.ok : C.muted),
+    title: id,
+    onClick: async () => {
+      try {
+        await navigator.clipboard.writeText(id)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1200)
+      } catch { /* clipboard refused; the title still shows the id */ }
+    },
+  }, copied ? '已复制' : '复制 id')
+}
+
+function MemoryRow({ row }) {
+  const meta = [
+    row.user ? `user=${row.user}` : null,
+    row.agent ? `agent=${row.agent}` : null,
+    row.run ? `run=${row.run}` : null,
+    row.updatedAt ? `更新 ${new Date(row.updatedAt).toLocaleString()}` : null,
+  ].filter(Boolean).join('  ·  ')
+  return h('div', { style: S.block },
+    h('div', { style: S.blockHead },
+      h('span', { style: S.badge(C.idle) }, TYPE_LABEL[row.type] ?? row.type ?? '?'),
+      h('span', { style: S.mono, title: row.id }, `${String(row.id).slice(0, 12)}…`),
+      h('span', { style: S.badge(C.idle) }, `${row.chars} 字符`),
+      h('span', { style: S.spacer }),
+      h(CopyId, { id: row.id }),
+    ),
+    h('div', { style: S.body }, row.memory),
+    h('div', { style: { ...S.hint, marginTop: '4px' } }, meta),
+    row.metadata && h('div', { style: { ...S.mono, color: C.muted, marginTop: '4px' } },
+      JSON.stringify(row.metadata)),
+  )
+}
+
+/**
+ * The stored-memory browser.
+ *
+ * Deliberately a substring browse over `memories.memory`, not ranked retrieval:
+ * semantic search is the model's `memory_search` (it needs the embedder), and a
+ * panel that polled it would cost a retrieval per refresh. The label says so.
+ */
+function MemoriesView({ onError }) {
+  const [draft, setDraft] = useState('')
+  const [query, setQuery] = useState({ q: '', type: '', limit: 20, offset: 0 })
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    const params = new URLSearchParams()
+    if (query.q) params.set('q', query.q)
+    if (query.type) params.set('type', query.type)
+    params.set('limit', String(query.limit))
+    params.set('offset', String(query.offset))
+    setLoading(true)
+    fetch(`${MEMORIES_URL}?${params}`)
+      .then(async (res) => ({ res, json: await res.json().catch(() => null) }))
+      .then(({ res, json }) => {
+        if (!alive) return
+        if (!res.ok || json?.ok !== true) setError(`HTTP ${res.status}${json?.error ? ` · ${json.error}` : ''}`)
+        else { setError(null); setData(json) }
+      })
+      .catch((err) => { if (alive) setError(String(err?.message ?? err)) })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [query])
+
+  useEffect(() => { if (error) onError?.(error) }, [error, onError])
+
+  const submit = (event) => {
+    event?.preventDefault?.()
+    setQuery((current) => ({ ...current, q: draft, offset: 0 }))
+  }
+  const total = data?.total ?? 0
+  const from = total === 0 ? 0 : (data?.offset ?? 0) + 1
+  const to = Math.min(total, (data?.offset ?? 0) + (data?.rows?.length ?? 0))
+
+  return h(Fragment, null,
+    h(Card, { title: '浏览已存的记忆（只读）' },
+      h('form', { style: { ...S.rowActions, marginBottom: '10px' }, onSubmit: submit },
+        h('input', {
+          style: { ...S.input, flex: 1, minWidth: '180px' },
+          value: draft, placeholder: '子串匹配（不是语义检索）',
+          onChange: (e) => setDraft(e.target.value),
+        }),
+        h('select', {
+          style: S.input, value: query.type,
+          onChange: (e) => setQuery((c) => ({ ...c, type: e.target.value, offset: 0 })),
+        },
+          h('option', { value: '' }, '全部类型'),
+          ...Object.entries(TYPE_LABEL).map(([value, label]) => h('option', { key: value, value }, label)),
+        ),
+        h('select', {
+          style: S.input, value: String(query.limit),
+          onChange: (e) => setQuery((c) => ({ ...c, limit: Number(e.target.value), offset: 0 })),
+        }, ...PAGE_SIZES.map((size) => h('option', { key: size, value: String(size) }, `每页 ${size}`))),
+        h('button', { type: 'submit', style: S.small(C.brand, true), disabled: loading }, loading ? '查询中…' : '查询'),
+      ),
+      h('div', { style: S.hint },
+        `共 ${total} 条${total > 0 ? ` · 显示第 ${from}–${to} 条` : ''} · 子串匹配（非语义检索；语义召回请让模型调 memory_search）`),
+    ),
+    error && h('div', { style: S.banner(C.err) }, `读取记忆失败：${error}`),
+    !error && (data?.rows?.length ?? 0) === 0 && h('div', { style: S.empty }, '没有匹配的记忆。'),
+    !error && (data?.rows ?? []).map((row) => h(MemoryRow, { key: row.id, row })),
+    !error && total > (data?.limit ?? 0) && h('div', { style: { ...S.rowActions, marginTop: '10px' } },
+      h('button', {
+        style: S.small(C.muted), disabled: (data?.offset ?? 0) === 0,
+        onClick: () => setQuery((c) => ({ ...c, offset: Math.max(0, c.offset - c.limit) })),
+      }, '上一页'),
+      h('span', { style: S.hint }, `${(data?.offset ?? 0) / (data?.limit ?? 1) + 1} / ${Math.ceil(total / (data?.limit ?? 1))}`),
+      h('button', {
+        style: S.small(C.muted), disabled: to >= total,
+        onClick: () => setQuery((c) => ({ ...c, offset: c.offset + c.limit })),
+      }, '下一页'),
+    ),
+  )
+}
+
 function MemoryPanel() {
+  const [view, setView] = useState('blocks')
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [writeError, setWriteError] = useState(null)
@@ -307,6 +435,18 @@ function MemoryPanel() {
         `配置里有未声明的键（已忽略）：${data.configIssues.unknown.join(', ')}`),
       !writable && h('div', { style: S.banner(C.idle) }, '面板当前为只读（config panel.writes: false）。'),
 
+      h('div', { style: { ...S.rowActions, marginBottom: '12px' } },
+        h('button', {
+          style: S.small(view === 'blocks' ? C.brand : C.muted, view === 'blocks'),
+          onClick: () => setView('blocks'),
+        }, '注入与抽取'),
+        h('button', {
+          style: S.small(view === 'memories' ? C.brand : C.muted, view === 'memories'),
+          onClick: () => setView('memories'),
+        }, '浏览记忆'),
+      ),
+
+      view === 'blocks' ? h(Fragment, null,
       h(Card, { title: '注入（读半边）' },
         h('div', { style: S.grid },
           h(KV, { k: '上下文名', v: read?.name }),
@@ -367,6 +507,7 @@ function MemoryPanel() {
               ]),
             ),
       ),
+      ) : h(MemoriesView, { onError: setError }),
     ),
   )
 }
