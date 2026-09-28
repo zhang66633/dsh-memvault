@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.8.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -49,6 +49,7 @@ The plugin does three things:
 | ✏️ **Editable core blocks** | 编辑 / 删除 on any block, and a form to create one. A write is an upsert keyed by `(scope_type, scope_id, label)`, it drops the render cache so the next step already sees it, and `panel.writes: false` turns the whole thing read-only |
 | 🔎 **Browse what is stored** | A second view searches the `memories` table by substring with type/scope filters and paging, showing type, scope, age and the id (one click to copy, so a tool call can act on it). It is a **browse**, not retrieval — semantic recall stays with the model's `memory_search` — and it never selects the embedding blob |
 | 🧾 **Trace and review** | Every extraction records **which memories it produced**, so a window links to its rows ("看这 2 条产出"). Each row can open its provenance — MemVault's own audit trail (`history`: ADD/UPDATE/DELETE with old and new text) and the contradictions it takes part in (`relations`) — and can be **marked for review**. Flags are plugin state: the store is never touched |
+| ♻️ **A review loop that can act** | The queue resolves each flagged memory with its window and retained input. Two actions: **复制修正请求** hands the model the ids, texts and provenance (it proposes; DSH's approval is the gate), and **重抽** sends that window's text through MemVault's own pipeline again — optionally edited, optionally with the other extractor. Replay is the panel's one store-writing action, and it writes through `add()`, never around it |
 | 🖥️ **Host half needs no browser** | The panel is optional: `webServer` is taken with `ctx.inject`, so a headless composition still injects memory and simply never registers the routes |
 | 🛟 **Fail-soft by design** | An unreadable store serves the last good text and warns once; a broken extraction never fails a turn and never poisons the next one |
 | 🔍 **Observable from outside** | Watermarks and the last five extraction diagnostics are written atomically to one JSON file, so "hook never fired" is distinguishable from "turn too short" from "ran and found nothing" |
@@ -159,6 +160,8 @@ The browser half has no knobs of its own; it reads the two routes the host half 
 | `/memvault/api/memories` | `GET` | Browse stored memories: `q` (substring), `type`, `user`, `agent`, `run`, `ids` (an explicit id list, how a diagnostic's output is looked up), `flagged=1` (only marked rows), `limit` (default 20, capped at 200), `offset`. Answers `{ rows, total, limit, offset, order, applied, mode, flags, flaggedCount }` — `applied` echoes what was actually used, and `mode: 'substring'` says out loud that this is not ranked retrieval |
 | `/memvault/api/memory` | `GET` | One memory's provenance (`?id=`): the row, `history` (every audited decision with old/new text) and `relations` (the contradictions, with the other side's text and weight). 404 for an unknown id, `missing: true` in the body |
 | `/memvault/api/flag` | `POST` | Mark or clear one memory for review: `{ id, flagged: true \| false, note? }`. Writes the plugin's **own state file** — MemVault is untouched — and answers with the whole bounded flag map. 403 when `panel.writes: false` |
+| `/memvault/api/review` | `GET` | The review queue: every flagged memory with its provenance, the window that produced it, whether that window's input is still retained (`replayable`), the retained `inputText` when it is, and `request` — a ready-to-paste instruction listing ids, texts and provenance for a model to propose fixes |
+| `/memvault/api/replay` | `POST` | Replay one retained input: `{ key, text?, extractor?: 'inherit' \| 'rule' \| 'llm' }`. Answers **202** because the work is queued; the outcome appears as a diagnostic with `replayOf`. Writes the store through MemVault's own `add()`; 403 when `panel.writes: false` |
 
 The handlers refuse anything that is not a loopback `Host` with a matching `Origin` (when the browser sends one) and a same-site `Sec-Fetch-Site`, answering 403 otherwise. They are `exact` routes, so they match before the shell's index/`/api` handlers. A bad action, an unknown scope type, an empty value or an over-long value is a 400 before anything is spawned; a CLI failure is a 502.
 
@@ -303,6 +306,33 @@ read, window, panel and contract tests run. So the import is attempted once,
 DSH never hits that path; the tests do, and they verify the schema with the real
 Schemastery whenever the machine has one.
 
+**Why replay goes through MemVault's `add()` instead of around it.** MemVault already
+owns the write policy: `_decide` compares a new fact against the most similar
+in-scope memory and picks ADD (below 0.55 similarity), DELETE (a negation), UPDATE
+(same attribute slot, or ≥ 0.82 similarity), or ADD again for a paraphrase — that
+0.55–0.82 band is *deliberately* allowed to coexist and is what `consolidate`
+(≥ 0.92) later folds together. Routing a replay through the same door inherits all
+of that, plus the `history` audit and the `relations` bookkeeping, for free; a
+private "replace this row" rule in the panel would be a second, silently divergent
+policy. Measured consequence: replaying a window whose text is unchanged updates
+the **same rows in place** (identical ids before and after, no duplicates) because
+the decision lands on UPDATE. A paraphrase the store decides to ADD stays until
+`consolidate` runs — that is the trade, not a bug.
+
+**Why the panel keeps the inputs it sent.** A replay needs the text, and after an
+extraction the text used to be gone (only counts survived). The last five inputs
+are retained, clamped, in the same state file — which also makes a *failed*
+extraction replayable, and lets a human fix the input ("the extractor misread this
+sentence") before sending it again.
+
+**Why "the model proposes, the human approves" lives outside the plugin.** The
+model already has MemVault's write tools, and DSH already gates tool calls with an
+approval prompt. A second approval queue inside the plugin would duplicate that
+gate and add a way for the panel to edit memories — exactly what it promises never
+to do. So the plugin's half is the *evidence*: a request that carries ids, texts,
+windows and provenance, plus a queue that shows what is flagged. Replay is the one
+exception, because re-running the pipeline is extraction, not editing.
+
 **Why a review flag is plugin state rather than a memory edit.** The one thing only
 a human can supply is "this extracted fact is wrong", and recording it is useful;
 acting on it is dangerous. So a flag is a timestamped note in the plugin's own
@@ -332,6 +362,9 @@ file.
 
 - **Extraction lands after a pause, not instantly.** That is the point (the LLM call stays off the critical path), but it means a memory written now is normally visible after the session goes quiet for `idleMs` — or immediately via the panel's 立即抽取.
 - **A window is text, not a log.** Recovery re-sends the rendered transcript, so it cannot re-derive turns that were not rendered (assistant prose and tool traffic are off by default anyway).
+- **Replay re-sends text; it does not rewrite facts.** The stored transcript is what was sent, and MemVault decides what to do with it. A paraphrase the store chooses to ADD stays until `consolidate` (or the model, with your approval) removes it.
+- **Only the last five extraction inputs are retained**, so older windows cannot be replayed; the queue says so per item (`replayable: false`).
+- **The panel still never edits a memory.** It flags, traces, exports a request and replays extraction. Deleting or rewriting stays with the model's MemVault tools, behind DSH's approval — or with the CLI.
 - **Source changes need a real host restart.** Editing the plugin's own `lib/*.js` (or its config) is only picked up by a genuine process restart — "refresh the UI" is not enough, and the symptom is simply *no change*. A **newly added client half additionally needs a page reload**, because the boot graph is rendered into the index response.
 - **The panel edits core blocks, not memories.** Create / replace / delete on the stable `(scope_type, scope_id, label)` blocks only. It never writes a memory (that goes through extraction, embeddings included) and it never triggers an extraction by hand.
 - **`node:sqlite` is experimental** in the Node versions DSH currently ships.
@@ -339,8 +372,8 @@ file.
 
 ## 🗺️ Roadmap
 
-- **Acting on the review list** — flags are recorded and filterable; the next step is a refine/replay pass that uses them (re-extract a window with different knobs, or hand the flagged ids to the model with the original transcript).
-- **Deep links in the other direction** — from a stored memory back to the window that produced it (the diagnostic holds the ids now, not yet the reverse index).
+- **Let the model consume the review request directly** — today it is copied and pasted; a tool that hands the queue over (still behind DSH's approval) would close the loop on the model's side.
+- **A relations view** — the whole contradiction graph, clustered, rather than one memory's neighbourhood.
 
 ## 📄 License
 

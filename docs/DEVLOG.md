@@ -334,7 +334,42 @@ npm test   # smoke:package + smoke + smoke:extract 三套全绿
 
 ---
 
-## 12. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
+## 12. 0.9.0：复核闭环可操作化（①A + ②C）
+
+用户拍板的方向：**①A 重抽走 MemVault 自己的判定**（继承它的 ADD/UPDATE/DELETE、审计与关系），**②C 模型提议、人批准**（不把改库权交给面板）。
+
+### 12.1 先把写策略读清楚（规则 ①）
+
+| 结论 | 出处 |
+|---|---|
+| `_decide(fact, vec, index)` 与作用域内**最相似的一条**比较：无候选（<0.55）→ ADD；否定关系 → DELETE；同一属性槽位或 ≥0.82 → UPDATE；否则 ADD | `memory.py` |
+| `SIM_UPDATE=0.82`、`SIM_CANDIDATE=0.55`、`SIM_CONSOLIDATE=0.92`；**0.55–0.82 的近义改写是刻意并存的**，由 consolidate 收敛 | `memory.py` 顶部常量与其注释 |
+| `upsert_memory` 按 **id** 冲突更新（`ON CONFLICT(id) DO UPDATE`），而 `add()` 默认新生成 `mem_<uuid12>`（除非传入已有 id） | `storage.py` / `memory.py` |
+| `content_hash(text, user, agent, run)` 存在并有索引 | `memory.py` / `storage.py` |
+| `MEMVAULT_EXTRACTOR` = `rule`（默认，离线）\| `llm`；`MEMVAULT_EMBEDDER` = `local` \| `openai` | `config.py` |
+
+### 12.2 设计
+
+- **留存输入（最多 5 份，裁剪）**：重抽需要文本，而抽完就丢的旧行为让重抽不可能；顺带让**失败的抽取**也能重抽，并允许人先改对输入再送。
+- **反向索引 `produced: memoryId → {seq, sessionId, inputKey, at, replayOf}`（最多 200）**：诊断只留最近 5 条，没有反向索引的话「这条记忆来自哪个窗口」会随诊断滚出而失效。
+- **重抽走 CLI `add()`**：`extractor` 选项 = `inherit`（默认，什么都不加）\| `rule` \| `llm`（后者落成 `MEMVAULT_EXTRACTOR` 环境覆盖）。路由回 **202**——它排队，不阻塞。
+- **`/review` 队列**：标记项 + 来源 + 窗口 + 原文是否还在（`replayable`）+ 可编辑的 `inputText` + **`request`**（一份可粘给模型的说明）。队列上限 50，因为每项要三次 provenance 查询。
+- **改库的门在哪里**：面板不提议、不删、不改；它把证据交出去，模型用自己的 MemVault 工具提议，DSH 的批准提示是那道门（②C）。重抽是**唯一**会写库的面板动作，并且与块编辑共用 `panel.writes` 开关。
+
+### 12.3 验证（规则 ③）
+
+纯函数：留存输入的边界/裁剪/元数据/不可变、坏输入丢弃、反向索引的上限与"重抽标记"、`validateReplay` 的五种拒绝（未知 key 404、坏 extractor 400、超长 400、低于 minTranscriptChars 400、默认取回原文）与环境覆盖的映射、`shapeReviewItem` / `buildReviewRequest` 的形状与措辞。
+
+端到端（临时库 + 真实 CLI，全是离线 rule 抽取器）：窗口抽取后状态文件里正好 1 份输入（37 字符）→ 反向索引两条都指向它 → 浏览载荷带上反向索引 → 空队列无 request → 标记一条后队列解析出窗口/来源/`replayable: true`/`inputText`/`request` → 重抽被接受（202、key、extractor）→ 新诊断带 `replayOf` 且 `ok added=2` → **同一段文本重抽后 id 完全一致、库仍是 2 行**（证明 ①A 落在 UPDATE 而不是复制）→ 留存输入没被覆盖 → `panel.writes:false` 时重抽 403。
+
+### 12.4 两点小教训（写下来）
+
+21. **测试助手把"主体"写死了。** 上一轮我加的 `browse()` 助手内部固定走 `MEMORIES_PATH`，这一轮复用它去读 `/review` 与 `/replay` 时**悄悄读错了路由**（只会得到 404/405 之类看似正常的失败）。改成 `hit(path, opts)` 后各种路由都能测。教训：测试助手不要隐含路由/资源，参数化它。
+22. **测试文件里的重复标识符。** 我把新助手命名为 `hit`，与文件里已有的 `const hit = await browse(...)`（搜索命中）冲突，Node 直接 `SyntaxError: Identifier 'hit' has already been declared`——好在 ESM 立即报错，比运行期才发现好。教训：给测试里的"结果变量"起有含义的名字（`substringHit`），别用 `hit`/`res`/`data` 这类通用名。
+
+---
+
+## 13. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
 
 要「优先参考源码」时，DSH 的包都在 `app.asar` 这个打包文件里，asar 只是「JSON 头 + 拼接的文件数据」：
 

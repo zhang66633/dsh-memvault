@@ -30,6 +30,8 @@ import {
   MEMORIES_PATH,
   MEMORY_PATH,
   REFRESH_PATH,
+  REPLAY_PATH,
+  REVIEW_PATH,
   STATUS_PATH,
   buildStatus,
   createPanelApi,
@@ -47,6 +49,18 @@ import {
   shapeMemoryRow,
 } from '../lib/memories.js'
 import { MAX_FLAGS, NOTE_CLAMP, flaggedIds, normalizeFlags, setFlag } from '../lib/flags.js'
+import {
+  INPUT_TEXT_CLAMP,
+  MAX_INPUTS,
+  MAX_PRODUCED_INDEX,
+  buildReviewRequest,
+  pruneInputs,
+  pruneProduced,
+  recordProduced,
+  shapeReviewItem,
+  storeInput,
+  validateReplay,
+} from '../lib/review.js'
 import { PRODUCED_TEXT_CLAMP, shapeProduced } from '../lib/extract.js'
 import {
   BLOCK_LABEL_MAX,
@@ -277,6 +291,85 @@ check('a missing host is refused', !isTrustedRequest({}))
     `${Object.keys(capped).length} flags`)
 }
 
+// ── the review loop's state (retained inputs, reverse index, replay rules) ──
+{
+  const many = {}
+  for (let i = 0; i < MAX_INPUTS + 3; i += 1) {
+    many[`k${i}`] = { at: new Date(2026, 0, 1, 0, 0, i).toISOString(), text: `turn ${i}` }
+  }
+  const pruned = pruneInputs(many)
+  check('retained inputs are bounded, newest first',
+    Object.keys(pruned).length === MAX_INPUTS && !Object.hasOwn(pruned, 'k0')
+    && Object.hasOwn(pruned, `k${MAX_INPUTS + 2}`),
+    Object.keys(pruned).join(','))
+  check('malformed retained inputs are dropped',
+    Object.keys(pruneInputs({ a: null, b: 'x', c: [], d: { text: '' }, e: { text: 'ok' } })).join(',') === 'e',
+    Object.keys(pruneInputs({ a: null, b: 'x', c: [], d: { text: '' }, e: { text: 'ok' } })).join(','))
+
+  const before = { k: { text: 'kept' } }
+  const stored = storeInput(before, 'new', { text: 'x'.repeat(INPUT_TEXT_CLAMP + 10), seq: 7, sessionId: 's', turns: 2 })
+  check('storing an input clamps the text and keeps the metadata',
+    stored.new.text.length === INPUT_TEXT_CLAMP && stored.new.seq === 7 && stored.new.turns === 2
+    && Object.hasOwn(stored, 'k') && !Object.hasOwn(before, 'new'),
+    `${stored.new.chars} chars`)
+  check('an empty key stores nothing', !Object.hasOwn(storeInput({}, '', { text: 'x' }), ''))
+
+  const produced = recordProduced({}, [{ id: 'a' }, { id: null }, { id: 'b' }], { seq: 3, sessionId: 's', inputKey: 's@3' })
+  check('the produced index keeps ids and drops the rest',
+    Object.keys(produced).join(',') === 'a,b' && produced.a.seq === 3 && produced.a.inputKey === 's@3',
+    JSON.stringify(produced))
+  const replayed = recordProduced(produced, [{ id: 'c' }], { seq: null, replayOf: 's@3', inputKey: 's@3' })
+  check('a replay records itself as such',
+    replayed.c.replayOf === 's@3' && Object.keys(replayed).length === 3)
+  const bigIndex = Object.fromEntries(Array.from({ length: MAX_PRODUCED_INDEX + 5 }, (_, i) =>
+    [`m${i}`, { at: new Date(2026, 0, 1, 0, 0, i).toISOString() }]))
+  check('the produced index is bounded, newest kept',
+    Object.keys(pruneProduced(bigIndex)).length === MAX_PRODUCED_INDEX
+    && !Object.hasOwn(pruneProduced(bigIndex), 'm0'))
+
+  const inputs = { k1: { at: '2026-01-02T00:00:00.000Z', seq: 9, turns: 2, text: '用户: 我喜欢吃辣。' } }
+  const valid = validateReplay({ key: 'k1' }, { inputs, minTranscriptChars: 5 })
+  check('a replay defaults to the stored text and inherits the extractor',
+    valid.ok === true && valid.text === inputs.k1.text && valid.extractor === 'inherit'
+    && Object.keys(valid.env).length === 0,
+    JSON.stringify({ extractor: valid.extractor, env: valid.env }))
+  check('an explicit extractor becomes an environment override',
+    validateReplay({ key: 'k1', extractor: 'rule' }, { inputs }).env.MEMVAULT_EXTRACTOR === 'rule'
+    && validateReplay({ key: 'k1', extractor: 'llm' }, { inputs }).env.MEMVAULT_EXTRACTOR === 'llm')
+  check('edited text is used as given',
+    validateReplay({ key: 'k1', text: '改过的输入' }, { inputs }).text === '改过的输入')
+  check('an unknown key is a 404',
+    validateReplay({ key: 'nope' }, { inputs }).status === 404
+    && validateReplay({}, { inputs }).status === 404)
+  check('a bad extractor is a 400',
+    validateReplay({ key: 'k1', extractor: 'magic' }, { inputs }).status === 400)
+  check('text over the clamp is a 400',
+    validateReplay({ key: 'k1', text: 'x'.repeat(INPUT_TEXT_CLAMP + 1) }, { inputs }).status === 400)
+  check('text below the plugin’s own floor is a 400',
+    validateReplay({ key: 'k1', text: '  a  ' }, { inputs, minTranscriptChars: 10 }).status === 400)
+
+  const item = shapeReviewItem({
+    row: { id: 'm1', memory: '文本', chars: 2 },
+    flag: { at: '2026-01-02T00:00:00.000Z', note: '助手口吻' },
+    window: { seq: 9, at: '2026-01-02T00:00:00.000Z', inputKey: 'k1' },
+    provenance: { history: [{ action: 'ADD' }], relations: [] },
+    replayable: true,
+  })
+  check('a review item carries its flag, window, provenance and replayability',
+    item.flaggedAt === '2026-01-02T00:00:00.000Z' && item.note === '助手口吻'
+    && item.window.seq === 9 && item.replayable === true && item.history[0].action === 'ADD',
+    JSON.stringify(item.window))
+  check('a review item without a window says so',
+    shapeReviewItem({ row: { id: 'm2' } }).window === null
+    && shapeReviewItem({ row: { id: 'm2' } }).replayable === false)
+  const request = buildReviewRequest([item])
+  check('the model-facing request carries the id, the text and the provenance',
+    request.includes('m1') && request.includes('文本') && request.includes('助手口吻')
+    && request.includes('窗口 @9') && request.includes('审计') && request.includes('不要执行任何写操作'),
+    request.split('\n')[0])
+  check('an empty queue builds no request', buildReviewRequest([]) === '')
+}
+
 // ── the real thing: mount on a stub cordis ctx against a throwaway db ────────
 const dir = mkdtempSync(join(tmpdir(), 'dsh-memvault-panel-'))
 try {
@@ -348,9 +441,10 @@ try {
     children.length === 1 && children[0].deps.join(',') === 'webServer', JSON.stringify(children.map((c) => c.deps)))
 
   children[0].callback(childCtx)
-  check('all seven exact routes are registered',
+  check('all nine exact routes are registered',
     routes.has(STATUS_PATH) && routes.has(REFRESH_PATH) && routes.has(BLOCKS_PATH)
-    && routes.has(FLUSH_PATH) && routes.has(MEMORIES_PATH) && routes.has(MEMORY_PATH) && routes.has(FLAG_PATH),
+    && routes.has(FLUSH_PATH) && routes.has(MEMORIES_PATH) && routes.has(MEMORY_PATH)
+    && routes.has(FLAG_PATH) && routes.has(REVIEW_PATH) && routes.has(REPLAY_PATH),
     [...routes.keys()].join(', '))
 
   const call = async (path, method = 'GET', body = null, headers = { host: '127.0.0.1:19387' }) => {
@@ -665,14 +759,22 @@ try {
       JSON.stringify(rows.map((r) => r.memory)))
 
     // ── the browse route, against the store extraction just wrote ────────────
-    const browse = async (url = MEMORIES_PATH, method = 'GET', headers = { host: '127.0.0.1:19387' }) => {
+    const hit = async (path, { method = 'GET', url = path, headers = { host: '127.0.0.1:19387' }, body = null } = {}) => {
       const out = { code: null, body: null }
-      await windowRoutes.get(MEMORIES_PATH).handler(
-        { headers, method, url },
+      await windowRoutes.get(path).handler(
+        {
+          headers, method, url,
+          on(event, handler) {
+            if (event === 'data' && body !== null) handler(JSON.stringify(body))
+            if (event === 'end') handler()
+          },
+        },
         { writeHead(code) { out.code = code }, end(payload) { out.body = JSON.parse(payload) } },
       )
       return out
     }
+    const browse = (url = MEMORIES_PATH, method = 'GET', headers = null) =>
+      hit(MEMORIES_PATH, { url, method, ...(headers ? { headers } : {}) })
     const page = await browse()
     check('the browse route returns the stored memories',
       page.code === 200 && page.body.ok === true && page.body.total === 2 && page.body.rows.length === 2,
@@ -684,9 +786,9 @@ try {
       Object.keys(page.body.rows[0]).join(','))
     check('the payload says this is a substring browse, not retrieval', page.body.mode === 'substring')
 
-    const hit = await browse(`${MEMORIES_PATH}?q=${encodeURIComponent('南京')}`)
+    const substringHit = await browse(`${MEMORIES_PATH}?q=${encodeURIComponent('南京')}`)
     check('a substring search finds the row extraction produced',
-      hit.body.total === 1 && hit.body.rows[0].memory.includes('南京'), JSON.stringify(hit.body.applied))
+      substringHit.body.total === 1 && substringHit.body.rows[0].memory.includes('南京'), JSON.stringify(substringHit.body.applied))
 
     const literal = await browse(`${MEMORIES_PATH}?q=${encodeURIComponent('%')}`)
     check('a literal % is a literal, not a wildcard', literal.body.total === 0, `total=${literal.body.total}`)
@@ -810,6 +912,101 @@ try {
         { id: null, memory: 'no id' },
         { id: 'b', memory: 'ok' },
       ]).length === 2)
+
+    // ── the review queue, and a real replay ─────────────────────────────────
+    const stateNow = loadState(windowState)
+    check('the state file retains what the window sent',
+      Object.keys(stateNow.inputs).length === 1
+      && Object.values(stateNow.inputs)[0].text.includes('南京')
+      && Object.values(stateNow.inputs)[0].turns === 2,
+      JSON.stringify(Object.values(stateNow.inputs).map((i) => i.chars)))
+    const inputKey = Object.keys(stateNow.inputs)[0]
+    check('the reverse index links each produced memory to its window',
+      Object.keys(stateNow.produced).length === 2
+      && Object.values(stateNow.produced).every((entry) => entry.inputKey === inputKey && entry.seq === 4),
+      JSON.stringify(Object.values(stateNow.produced)[0]))
+    check('the browse payload carries the reverse index',
+      Object.hasOwn((await browse()).body.produced, target.id))
+
+    const emptyQueue = await hit(REVIEW_PATH)
+    check('an empty queue has no items and no request',
+      emptyQueue.code === 200 && emptyQueue.body.items.length === 0 && emptyQueue.body.request === '',
+      JSON.stringify(emptyQueue.body))
+
+    await flagCall({ id: target.id, flagged: true, note: '看着像助手口吻' })
+    const queue = await hit(REVIEW_PATH)
+    check('the queue resolves the flagged row with its provenance and window',
+      queue.body.items.length === 1 && queue.body.items[0].id === target.id
+      && queue.body.items[0].note === '看着像助手口吻'
+      && queue.body.items[0].window?.seq === 4
+      && queue.body.items[0].replayable === true
+      && queue.body.items[0].history.length >= 1
+      && typeof queue.body.items[0].inputText === 'string',
+      JSON.stringify(queue.body.items[0].window))
+    check('the queue hands over a model-ready request',
+      queue.body.request.includes(target.id) && queue.body.request.includes('待复核')
+      && queue.body.request.includes('不要执行任何写操作'),
+      queue.body.request.split('\n')[0])
+
+    const replayBadKey = await hit(REPLAY_PATH, { method: 'POST', body: { key: 'nope' } })
+    check('replaying an unknown input is a 404', replayBadKey.code === 404, `code=${replayBadKey.code}`)
+    const replayBadExtractor = await hit(REPLAY_PATH, { method: 'POST', body: { key: inputKey, extractor: 'magic' } })
+    check('an unknown extractor is a 400', replayBadExtractor.code === 400, `code=${replayBadExtractor.code}`)
+    check('the replay route is POST only', (await hit(REPLAY_PATH)).code === 405)
+    check('the replay route refuses an untrusted host',
+      (await hit(REPLAY_PATH, {
+        method: 'POST', body: { key: inputKey }, headers: { host: 'evil.example' },
+      })).code === 403)
+
+    // The real thing: the retained input, sent through MemVault's own pipeline.
+    const replay = await hit(REPLAY_PATH, { method: 'POST', body: { key: inputKey, extractor: 'rule' } })
+    check('a replay is accepted and queued',
+      replay.code === 202 && replay.body.ok === true && replay.body.key === inputKey
+      && replay.body.extractor === 'rule' && replay.body.queued === true,
+      JSON.stringify(replay.body))
+
+    const replayDeadline = Date.now() + 90_000
+    let replayDiag = null
+    while (Date.now() < replayDeadline) {
+      replayDiag = loadState(windowState).diagnostics.findLast?.((d) => d.replayOf === inputKey) ?? null
+      if (replayDiag) break
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    check('the replay records itself as a replay and reports its outcome',
+      replayDiag !== null && String(replayDiag.outcome).startsWith('ok'),
+      JSON.stringify(replayDiag))
+    check('a replay does not overwrite the retained input',
+      Object.hasOwn(loadState(windowState).inputs, inputKey) && Object.keys(loadState(windowState).inputs).length === 1)
+    const storeAfter = new DatabaseSync(windowDb, { readOnly: true })
+    const rowsAfter = storeAfter.prepare('SELECT COUNT(*) AS n FROM memories').get().n
+    storeAfter.close()
+    check('the replay went through the store (parsed, not raw)', rowsAfter >= 2, `rows=${rowsAfter}`)
+
+    // ① A in practice: the same text re-sent goes through MemVault's own decision,
+    // which recognises it as the same facts and updates in place — no duplicates.
+    const originalIds = withProduced[0].produced.map((p) => p.id).sort()
+    const replayIds = (replayDiag?.produced ?? []).map((p) => p.id).sort()
+    check('replaying the same text updates the same rows instead of duplicating them',
+      replayIds.join(',') === originalIds.join(',') && rowsAfter === originalIds.length,
+      `original=${originalIds.join(',')} replay=${replayIds.join(',')} rows=${rowsAfter}`)
+
+    // A read-only panel cannot replay: it writes the store.
+    const noReplayChildren = []
+    applyHost({ ...ctx, inject: (deps, cb) => noReplayChildren.push({ deps, cb }) }, {
+      dbPath: windowDb, panel: { writes: false }, extract: { enabled: false, statePath: windowState },
+    })
+    const noReplayRoutes = new Map()
+    noReplayChildren[0].cb({
+      effect: (fn) => fn(),
+      webServer: { register: (r) => { noReplayRoutes.set(r.path, r); return () => {} } },
+    })
+    const noReplay = { code: null, body: null }
+    await noReplayRoutes.get(REPLAY_PATH).handler(
+      { headers: { host: '127.0.0.1:19387' }, method: 'POST', on(event, handler) { if (event === 'end') handler() } },
+      { writeHead(code) { noReplay.code = code }, end(payload) { noReplay.body = JSON.parse(payload) } },
+    )
+    check('panel.writes:false disables replay (it writes the store)',
+      noReplay.code === 403 && /disabled/.test(noReplay.body.error), noReplay.body.error)
   }
 } finally {
   rmSync(dir, { recursive: true, force: true })
