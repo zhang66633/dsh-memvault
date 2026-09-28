@@ -51,7 +51,7 @@ node scripts\smoke-extract.mjs   # transcript 渲染 / 边界切片 / 事件缓�
 - **抽取是同步的、送单轮**：更符合最佳实践的做法是**异步 + 窗口**（攒够 N 轮或空闲时后台跑，送近期多轮），既省成本也提高信噪比——现在会把助手的技术长文也送去做「用户事实」抽取。
 - **`everyNTurns` 验证期临时为 1**，稳定后应改回 3（`cordis.patch.yml` 现已是 3）。
 - **插件源码改动需重启 host**（见踩坑 10），没有热加载。
-- **没有客户端半边**：GUI 里看不到任何东西（无设置页、无面板）。可观测性只有轨迹里的 `memvault:core`、Plugins 页的插件行，以及状态 JSON。
+- **面板已补齐**（0.3.0，见 §7）：GUI 里有 记忆 页签与 Plugins 设置页两处入口；它只读，不写块、不触发抽取。
 
 ---
 
@@ -110,7 +110,51 @@ npm test   # smoke:package + smoke + smoke:extract 三套全绿
 
 ---
 
-## 7. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
+## 7. 0.3.0：面板（客户端半边）+ 两条 host 路由
+
+目标：把「此刻注入了什么」「抽取最近干了什么」从 JSON 文件搬进 GUI，**同时不牺牲无头可用性**。
+
+### 7.1 先把协议从源码确认清楚（规则 ①）
+
+| 结论 | 出处 |
+|---|---|
+| 客户端产物只认一种封装：`window.__ModuleLoader__.load({ id, factory: (require) => exports })` | `dsh-client-modules` README + 兄弟插件的 `lib/client.js` 实际产物 |
+| host 只提供**已构建**的产物，`lib/client.js` 缺失会明确报错并要求先构建 | `dsh-client-modules` README：host serves built client bundles |
+| `dsh.client` 里真正被解析的字段只有 `platform`（必须 `'web'`）与可选 `external` | `dsh-client-modules/lib/index.js`：`decl.platform`、`optionalStringArray(pkgName, "dsh.client.external", decl.external)` |
+| 路由：`ctx.webServer.register({ kind: 'exact', path, handler(req,res) })`；匹配顺序 exact → 最长 prefix → fallback | `dsh-host-webserver` README |
+| 浏览器认证只覆盖 index 交换与 `/api` 桥（`?token=` → 签名 cookie，`SameSite=Strict`、`Path=/`），**不覆盖**自己注册的 exact 路由 | `dsh-client-connection` README（admit/authorizeIndex） |
+| 插槽注册参数是 `{ id, order, label }`，`label` 可为 thunk（每次投影重读，随语言切换） | live `client Slots` inspect（`conversation.view`、`settings.plugins.tab` 的 catalog） |
+| 主题色用 `--dsw-alias-*` 真实 token | live `client Theme` inspect |
+
+实测到的两个卡位事实：`conversation.view` 已占用 `cf#chat(0)`、`cf#trajectory(10)`；`settings.plugins.tab` 已占用 `cf#all(10)`、`dsh-market(60)`。所以 `id: memvault`、`order: 30` 落在两者之间，不与任何现有条目抢格子。
+
+### 7.2 取舍
+
+- **手写客户端产物，不引 esbuild。** 面板只要 `require('react')`，而它由外壳的平台模块表满足；「打包」的全部内容就是那两行封装。于是 `scripts/build-client.mjs` 只做包裹 + 写入源码 sha256，包仍然零依赖。代价是多了一个「产物必须与源码同步」的约束，用测试堵住（见 7.3）。
+- **`webServer` 用 `ctx.inject(['webServer'], …)` 取，而不是写进 `inject`。** 写进 `inject` 会让无头组合里整个插件一直等依赖——**记忆注入会跟着面板一起失效**，这是不能接受的耦合。
+- **状态文件在启动时 `loadState()` 读进来**（水位 + 最近 5 条诊断），而不是只从空数组开始追加：否则每次重启后面板都像「从来没抽过」。
+- **面板路由自己校验调用方。** 既然不在认证门内，就按 `api-request-trust` 的同一条规则自检（loopback host、`Origin` 一致、非 cross-site）。这是边界不是身份，服务器仍只绑 loopback。
+- **面板只读。** 能看、能强制重读（把 `cache.at` 置 0），不能写块、不能手动触发抽取。
+
+### 7.3 验证（规则 ③）
+
+新增 `scripts/smoke-panel.mjs`（38 条断言，不需要 DSH 也不需要浏览器）：
+
+- 信任规则 7 条：loopback/localhost/Origin 一致放行，外域 host、外域 origin、cross-site、缺 host 全部拒绝；
+- 载荷：作用域拍平、超长块「真长度 + 裁剪值」分离、空快照两半边都在；
+- handler：200/403/405/500 四条路径，`cache-control: no-store`，抛错不会变成未处理 rejection；
+- **真行为**：在临时库上挂载插件 → 断言 `systemPrompt.context` 注册名与注入文本 → 子插件只有 `webServer` 一个依赖 → 两条 exact 路由注册成功 → `GET status` 拿到 2 块与磁盘上的诊断 → **TTL 未到期时新写入的行不出现** → `POST refresh` 把它捞进来（3 块）→ 注入文本随之包含新块 → 库缺失时仍 200 且带错误与上次已知的块 → `extract.enabled: false` 时面板照常工作；
+- 客户端产物：`lib/client.js` 必须等于 `src/client/index.js` 的构建结果 → 在 `vm` 里用 stub `window.__ModuleLoader__` + stub `require('react')` 真跑一遍 → 断言 bundle id = 包名、导出 `name/inject/apply`、`apply()` 在两个插槽各注册一次且组件是函数。
+
+### 7.4 新踩的坑
+
+13. **参考插件带着无效字段。** `dsh-project-hub`、`dsh-pixel-ui`、`dsh-memory` 的 `package.json` 里都写了 `dsh.client.inject: [...]`，但 `dsh-client-modules` 只解析 `platform` 与 `external`——那个字段**什么也没声明**；真正生效的是客户端模块自己导出的 `export const inject`。照抄它会让人误以为依赖已经被声明。（本包因此不写它，只在 `peerDependencies` 里声明真正会被兼容性检查的 `@deepseek-ai/dsh-client-ui-slots`。）
+14. **新加的客户端半边不会热加载。** 启动图（`window.__DSH_BOOT__`）是渲染进 index 响应的，所以「重启 host + 刷新页面」缺一不可；只改产物内容时，host 侧重启仍是必需的（跨进程边界）。
+15. **别用 `Get-Content` 判断 UTF-8 生成物坏没坏。** 控制台按本机码页（cp936）解码，`lib/client.js` 里的破折号会显示成乱码（`鈥?`）。用 Node 读字节或用 `git diff` 复核，不要据此改文件编码。
+
+---
+
+## 8. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
 
 要「优先参考源码」时，DSH 的包都在 `app.asar` 这个打包文件里，asar 只是「JSON 头 + 拼接的文件数据」：
 

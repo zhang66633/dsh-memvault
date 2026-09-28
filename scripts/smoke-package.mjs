@@ -63,6 +63,15 @@ check('exports inject[] naming only DSH services',
   (mod.inject ?? []).join(', '))
 check('exports an apply() function', typeof mod.apply === 'function')
 
+// The client bundle carries its own copy of the plugin identity: the ModuleLoader
+// envelope's `id` must be the package name, or the host's served bundle cannot be
+// matched to the row that requests it.
+const clientBundle = readFileSync(join(root, pkg.exports['./client']), 'utf8')
+const bundleId = /__ModuleLoader__\.load\(\{\s*id:\s*"([^"]+)"/.exec(clientBundle)?.[1]
+check('client bundle id === package name', bundleId === pkg.name, `${bundleId} vs ${pkg.name}`)
+check('client bundle is a factory envelope, not an ES module',
+  clientBundle.includes('factory: (require)') && !/^\s*export\s/m.test(clientBundle))
+
 // ── compatibility declaration ───────────────────────────────────────────────
 const peers = Object.keys(pkg.peerDependencies ?? {})
 const checkedFamilies = peers.filter((n) => n === '@deepseek-ai/dsh' || n.startsWith('@deepseek-ai/dsh-'))
@@ -75,9 +84,23 @@ check('peer ranges are non-empty strings',
   Object.values(pkg.peerDependencies ?? {}).every((r) => typeof r === 'string' && r.trim() !== ''))
 check('DshPackageManifest format version declared', pkg.dsh?.manifestVersion === 1)
 
+// ── the browser half ────────────────────────────────────────────────────────
+// `dsh.client` is parsed by @deepseek-ai/dsh-client-modules, which reads
+// `platform` (must be the string 'web') and the optional `external` list; any
+// other key there is inert. A declared client half needs a built `./client`
+// export to serve, because the host serves built bundles.
+check('declares the browser half as a web client',
+  pkg.dsh?.client?.platform === 'web', JSON.stringify(pkg.dsh?.client ?? null))
+check('the client half has an exports entry', typeof pkg.exports?.['./client'] === 'string', String(pkg.exports?.['./client']))
+check('the built client bundle exists (host serves built bundles)',
+  typeof pkg.exports?.['./client'] === 'string' && existsSync(join(root, pkg.exports['./client'])))
+check('the client source ships too, so the bundle can be rebuilt',
+  (pkg.files ?? []).includes('src') && existsSync(join(root, 'src/client/index.js')))
+check('the build script is declared', typeof pkg.scripts?.build === 'string', String(pkg.scripts?.build))
+
 // ── the plugin must not need a client half to work ──────────────────────────
-check('no dsh.client declaration (host-only: nothing to build, no browser bundle)',
-  pkg.dsh?.client === undefined)
+check('the client half declares no unneeded externals',
+  pkg.dsh?.client?.external === undefined || pkg.dsh.client.external.length === 0)
 
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `FAILED: ${failures.join(', ')}`}`)
 process.exit(failures.length === 0 ? 0 : 1)

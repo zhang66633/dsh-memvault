@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Push MemVault's core memory into the DeepSeek Harness system prompt — and let every finished turn flow back.</strong><br>
-  Host-only bundle · zero runtime dependencies · no build step · no second server
+  With a memory panel in the GUI · zero runtime dependencies · no bundler · no second server
 </p>
 
 <p align="center">
@@ -10,11 +10,12 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.2.0-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.3.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522.13-339933">
+  <img alt="panel" src="https://img.shields.io/badge/panel-conversation%20tab%20%2B%20settings-8957e5">
   <img alt="stars" src="https://img.shields.io/github/stars/zhang66633/dsh-memvault?style=flat&color=e3b341">
 </p>
 
@@ -22,12 +23,13 @@
 
 **dsh-memvault** is the missing half of a memory system that already exists. **MemVault** (a local long-term-memory service: a SQLite store, a FastAPI/CLI pipeline and a stdio MCP server) stores facts, embeds them and retrieves them — but it is a **stdio MCP server**, and MCP is a *pull* protocol: the server can only be *called*, it has no channel to put anything into the model's context. So "memory is already loaded" can never be achieved from the MCP side. It has to be done by the client, which is this plugin.
 
-The plugin does two things, in both directions:
+The plugin does three things:
 
 | Half | What it does | Mechanism |
 |---|---|---|
 | **Inject** (read) | Core memory blocks enter the system prompt, visible on **every** step without the model calling a tool | `ctx.systemPrompt.context()` — a dynamic runtime-context contribution (the same channel as `skill-catalog`) |
 | **Extract** (write) | Every *N*th finished turn, the turn's transcript is handed to MemVault's extraction/embedding pipeline | `ctx.on('session/event')` → `turn/end` → `python -m memvault.cli add --stdin` |
+| **Show** (panel) | What is injected right now, and what extraction has been doing, in the GUI | two exact host routes (`/memvault/api/*`) + a browser half rendered as a conversation tab and a Plugins settings page |
 
 ## ✨ Features
 
@@ -39,8 +41,9 @@ The plugin does two things, in both directions:
 | 🧩 **Turn-boundary slicing** | The write half slices the turn from its own bounded event log by `turn/end` boundaries: idempotent, restart-proof, no watermark arithmetic to go stale |
 | ⏱️ **Cost-aware extraction** | `everyNTurns` throttles the Python process, `minTranscriptChars` skips trivia, `endReasons` decides which turn endings count, `timeoutMs` kills a stuck child |
 | 🎭 **Role filtering** | Assistant prose and tool traffic are excluded by default — shipping them stored the model's own words as "facts about the user" |
-| 🪶 **Zero runtime dependencies** | Plain ESM over the harness plugin protocol: `node:sqlite`, `node:child_process`, `node:fs`. Nothing to install, nothing to build |
-| 🖥️ **Host-only bundle** | No `dsh.client` half, therefore no browser bundle, no `pnpm run build`, no HMR receiver: it works on every DSH surface, including a headless one |
+| 🪶 **Zero runtime dependencies** | Plain ESM over the harness plugin protocol: `node:sqlite`, `node:child_process`, `node:fs`. Nothing to install, and the browser half is hand-written against the ModuleLoader envelope instead of being bundled |
+| 🎛️ **A real panel** | A **记忆** tab in the conversation ring and a page under Settings → Plugins: the blocks currently injected (label, scope, characters, text), the read budget and cache age, the extraction knobs, sessions with a watermark, and the last five extraction outcomes — plus a **立即重读** button that ignores the 30 s render TTL |
+| 🖥️ **Host half needs no browser** | The panel is optional: `webServer` is taken with `ctx.inject`, so a headless composition still injects memory and simply never registers the routes |
 | 🛟 **Fail-soft by design** | An unreadable store serves the last good text and warns once; a broken extraction never fails a turn and never poisons the next one |
 | 🔍 **Observable from outside** | Watermarks and the last five extraction diagnostics are written atomically to one JSON file, so "hook never fired" is distinguishable from "turn too short" from "ran and found nothing" |
 
@@ -49,9 +52,9 @@ The plugin does two things, in both directions:
 | Question | Answer |
 |---|---|
 | **DSH Desktop** | ✅ Verified live on the reserved `desktop` profile: the bundle (`dsh.bundle.patch`) loads, the plugin row is `active`, and the injected blocks appear in the runtime-context snapshot. |
-| **Do I need a client half?** | No. This is a host-only bundle: `package.json` declares no `dsh.client`, so there is no browser bundle to build and nothing to keep in sync with the Web shell. |
-| **DSH Web / headless / SDK profiles** | ✅ The same bundle works wherever the host runs, because the injected contribution is host-side. `systemPrompt.context()` is the only service it injects. |
-| **A visible panel?** | ❌ Nothing in the GUI. There is no settings page and no conversation-ring panel — the only visible traces are the `memvault:core` entry in the execution trajectory's *injected context* list, the plugin row on the Plugins page, and the state JSON. A client half is on the [roadmap](#-roadmap). |
+| **Do I need a client half?** | Only for the panel. `dsh.client.platform: 'web'` serves the browser half; the memory bridge itself runs entirely host-side, so disabling the client half costs visibility, never injection. |
+| **DSH Web / headless / SDK profiles** | ✅ The same bundle works wherever the host runs. Headless compositions simply have no `webServer`, and the panel's child fiber waits for it instead of failing. `systemPrompt` is the only *required* service. |
+| **Is the panel visible?** | ✅ Two seats: a **记忆** tab beside 聊天 / 轨迹 in the conversation ring, and a **MemVault 记忆桥** page under Settings → Plugins. Both are read-only views over the injected blocks and the extraction state. |
 | **Windows / macOS / Linux** | ✅ Windows works out of the box with the author's layout; on other platforms point `MEMVAULT_DIR` / `MEMVAULT_PYTHON` at the checkout (a POSIX venv uses `.venv/bin/python`), or set the three paths in `cordis.patch.yml`. |
 | **Node** | `>= 22.13` (flag-free `node:sqlite`). DSH ships its own Node, so this is only a statement about the plugin's API floor. |
 | **Other harnesses (Claude Code, Codex, …)** | ❌ Not this plugin. It is written against the cordis/DSH surface (`ctx.systemPrompt.context`, `session/event`). Those harnesses reach the same store through MemVault's own MCP tools, CLI, or API. |
@@ -82,6 +85,15 @@ New-Item -ItemType Junction `
 > ⚠️ Two known traps. `dsh plugin add` rewrites the profile's `package.json`, and the `dsh.profile.bundles` array can silently lose *other* plugins' entries — always re-read the whole list afterwards. And pnpm can replace the `link:` junction; recreate it if the bundle suddenly stops loading.
 
 Installing from npm or a git spec is the same operation through `dsh plugin` or the Web sidebar's **Plugins** page (see `@deepseek-ai/dsh-plugin-manager`).
+
+The browser half is committed as `lib/client.js`, so a fresh clone needs no build. After editing `src/client/index.js`:
+
+```bash
+npm run build     # wraps the client source in the ModuleLoader envelope
+npm test          # fails when lib/client.js is stale
+```
+
+A brand-new client half is picked up by a **restart** plus a page reload: the boot graph is rendered into the index response.
 
 ## ⚙️ Configuration
 
@@ -117,6 +129,17 @@ Everything is a code default; a `config` block in `cordis.patch.yml` overrides i
 | `env` | `{PYTHONUTF8:'1', PYTHONIOENCODING:'utf-8'}` | Child environment. Removing these reintroduces the cp936/emoji bug below |
 | `statePath` | `~/.dsh/storages/dsh-memvault-state.json` | Watermarks + the last five diagnostics; atomic write |
 
+### Panel routes
+
+The browser half has no knobs of its own; it reads the two routes the host half registers. They exist only when the composition provides `webServer`.
+
+| Route | Method | Answers |
+|---|---|---|
+| `/memvault/api/status` | `GET` | Injected blocks (label, scope, characters, value clamped to 2000), read config, cache age, extraction config, watermark session count, last five diagnostics |
+| `/memvault/api/refresh` | `POST` | The same payload after dropping the render TTL — the 立即重读 button |
+
+Both handlers refuse anything that is not a loopback `Host` with a matching `Origin` (when the browser sends one) and a same-site `Sec-Fetch-Site`, answering 403 otherwise. They are `exact` routes, so they match before the shell's index/`/api` handlers.
+
 ## 🏗️ How it works
 
 ```mermaid
@@ -127,6 +150,10 @@ flowchart LR
     CTX["ctx.systemPrompt.context('memvault:core')"]
     HOOK["ctx.on('session/event')"]
     BUFF["bounded event log<br/>400/session · 32 sessions"]
+  end
+
+  subgraph BROWSER["Web / Desktop client"]
+    TAB["记忆 tab<br/>Settings → Plugins page"]
   end
 
   DB[("memvault.db<br/>blocks · memories")]
@@ -142,6 +169,10 @@ flowchart LR
   BUFF -->|"turn/end boundary slice"| PY
   PY -->|"extract · embed · upsert"| DB
   HOOK --> STATE
+
+  STATE -->|"loadState (watermarks + last 5)"| API["exact routes<br/>/memvault/api/status · /refresh"]
+  DB -->|"same read as the prompt gets"| API
+  API --> TAB
 ```
 
 Read path, per step:
@@ -159,20 +190,29 @@ Write path, per finished turn:
 4. Extractions are serialized: one child at a time, and a failure in one turn cannot poison the next.
 5. MemVault does the rest — LLM extraction, ADD/UPDATE/DELETE decisions, embeddings, relations — so written rows are actually *retrievable*.
 
+Panel path, on open and every 15 s:
+
+1. The browser half fetches `/memvault/api/status` from the same origin.
+2. The handler re-reads only when the TTL says so, so a polling panel never becomes a per-second SQLite read; 立即重读 forces the read instead.
+3. The payload reports the blocks **the prompt is getting**, not a second interpretation of the store — same reader, same scope/label filters, same budget.
+
 ## 🧪 Verification
 
-No DSH needed:
+No DSH and no browser needed:
 
 ```bash
-npm test              # all three suites
-npm run smoke:package # package/bundle contract: manifest, patch row, exports, peers
+npm test              # all four suites
+npm run smoke:package # package/bundle contract: manifest, patch row, exports, peers, bundle id
 npm run smoke         # reader + formatter + budget contract, against the real db (read-only)
 npm run smoke:extract # transcript, boundary slicing, event buffer, watermarks, and a REAL end-to-end write into a throwaway db
+npm run smoke:panel   # mounts the plugin on a stub context, drives both routes against a throwaway db, and runs the shipped client bundle under a stub ModuleLoader
 ```
+
+`smoke:panel` is where the panel's behaviour is actually pinned down: the TTL must serve a stale render while a row written in between exists, `POST /refresh` must pick that row up, an untrusted `Host`/`Origin` must get 403, a throwing handler must become a 500 rather than reject, an unreadable store must still answer 200 with the blocks it last knew, and the shipped `lib/client.js` must equal what `src/client/index.js` builds to.
 
 The end-to-end step forces the offline embedder and rule extractor in a temporary database: it never touches the real store and never calls the configured gateway.
 
-**Live check.** After a restart, the trajectory's *injected context* list gains a `memvault:core` entry whose content is your actual blocks, and the Plugins page shows the bundle's row (`memvault-core-context`) as active. `~/.dsh/storages/dsh-memvault-state.json` reports the write half's outcome: `skipped: transcript below minTranscriptChars`, `ok added=N`, or `failed: …`.
+**Live check.** After a restart, the trajectory's *injected context* list gains a `memvault:core` entry whose content is your actual blocks, the Plugins page shows the bundle's row (`memvault-core-context`) as active, and the **记忆** tab renders those same blocks with their character counts and the last extraction outcomes.
 
 ## 🧠 Design decisions
 
@@ -186,18 +226,25 @@ The end-to-end step forces the offline embedder and rule extractor in a temporar
 
 **Why `turn/end` reasons are configurable.** The agent loop emits `completed`, `max-tokens`, `blocked`, `aborted`, `error`, plus `interrupted` from the repair path. Accepting only `completed` silently drops turns that ended on `max-tokens` — which still contain real user content.
 
+**Why the browser half is hand-written instead of bundled.** A client bundle is served in the ModuleLoader envelope — `window.__ModuleLoader__.load({ id, factory })` — and resolving `require('react')` against the shell's platform seed table is all the "bundling" this panel needs. So `scripts/build-client.mjs` wraps the source in those two lines, and the package keeps zero dependencies: no esbuild, no `node_modules`, no build toolchain to keep alive. `src/client/index.js` is the readable source; `lib/client.js` is the committed artifact (the host serves built bundles and fails loudly when one is missing), and a test fails if the two ever drift.
+
+**Why the panel registers with `ctx.inject`.** `webServer` is a *wanted* service, not a required one: a headless composition has no browser to render into, and a memory bridge that stopped injecting because nothing could paint a panel would be a bug, not a safety feature. `ctx.inject(['webServer'], …)` starts a child fiber that simply waits in that case.
+
+**Why the panel routes check the caller themselves.** A route registered through `webServer` is not admitted by `dsh-client-connection` — that gate guards the index exchange and the `/api` bridge. The panel answers with the same request-trust rule the bridge documents (loopback host, matching `Origin` when present, no cross-site `Sec-Fetch-Site`) so a DNS-rebinding page cannot read the store. It is a boundary, not identity; the server still binds loopback only.
+
 ## ⚠️ Known limits
 
 - **No extraction window.** Extraction is synchronous and ships a single turn. Batching several turns and running asynchronously would be cheaper and give a better signal-to-noise ratio; today `includeAssistant: false` is the mitigation.
-- **Source changes need a real host restart.** Editing the plugin's own `lib/*.js` (or its config) is only picked up by a genuine process restart — "refresh the UI" is not enough, and the symptom is simply *no change*.
+- **Source changes need a real host restart.** Editing the plugin's own `lib/*.js` (or its config) is only picked up by a genuine process restart — "refresh the UI" is not enough, and the symptom is simply *no change*. A **newly added client half additionally needs a page reload**, because the boot graph is rendered into the index response.
+- **The panel is a viewer, not an editor.** It shows and re-reads; it cannot write a core block or trigger an extraction. Both are deliberate: a panel that edits memory is a different (and more dangerous) surface.
 - **`node:sqlite` is experimental** in the Node versions DSH currently ships.
 - **Machine-specific defaults.** `scopes` defaults to the author's `(user, lenovo)` / `(agent, claude-code-memory)` pairs, and the shipped patch points at the author's checkout. Both are meant to be edited.
 
 ## 🗺️ Roadmap
 
-- **A client half** — a panel tab that shows the blocks currently injected and the last extraction outcomes, i.e. the observability that today lives in a JSON file.
 - **Async, windowed extraction** — accumulate N turns or idle out, then extract in the background.
-- **A config schema** so the Plugins page can edit the knobs instead of a hand-written patch.
+- **A config schema** so the Plugins page can edit the knobs instead of a hand-written patch (the panel's page is the natural home for it).
+- **Block editing from the panel** — create/update a core block without leaving the GUI.
 
 ## 📄 License
 
