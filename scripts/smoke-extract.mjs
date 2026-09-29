@@ -15,9 +15,11 @@ import { join } from 'node:path'
 import {
   buildAddInvocation,
   createEventBuffer,
+  loadState,
   loadWatermarks,
   renderTranscript,
   runExtraction,
+  saveState,
   saveWatermarks,
   turnSpanByBoundary,
 } from '../lib/extract.js'
@@ -97,6 +99,43 @@ try {
   const map = new Map([['sess-1', 42]])
   check('watermark save succeeds', saveWatermarks(map, statePath) === true)
   check('watermark round-trips', loadWatermarks(statePath).get('sess-1') === 42)
+
+  // A partial writer must not erase its siblings. Regression: `saveState` used to
+  // build the document from only the keys it was handed, so every window flush
+  // (which goes through saveWatermarks) wiped the review flags, the retained
+  // extraction inputs and the produced-memory index. Found by reading the live
+  // state file, not by a failing test -- so here is the test.
+  const fullState = saveState(statePath, {
+    watermarks: map,
+    diagnostics: [{ at: '2026-09-29T00:00:00.000Z', outcome: 'ok added=1' }],
+    pending: { 'sess-1': { text: 'pending window' } },
+    flags: { mem_abc: { at: '2026-09-29T00:00:00.000Z', note: '看着像助手口吻' } },
+    inputs: { 'sess-1@7': { at: '2026-09-29T00:00:00.000Z', seq: 7, text: '用户: 我喜欢吃辣。' } },
+    produced: { mem_abc: { at: '2026-09-29T00:00:00.000Z', seq: 7, inputKey: 'sess-1@7' } },
+  })
+  check('a full save writes every key', fullState === true)
+  const beforeFlush = loadState(statePath)
+  check('the document carries all six keys',
+    beforeFlush.flags.mem_abc?.note === '看着像助手口吻'
+    && beforeFlush.inputs['sess-1@7']?.text.includes('吃辣')
+    && beforeFlush.produced.mem_abc?.inputKey === 'sess-1@7',
+    Object.keys(beforeFlush).join(','))
+
+  // exactly what the window flush path does: watermarks + diagnostics + pending
+  saveWatermarks(new Map([['sess-1', 43]]), statePath, beforeFlush.diagnostics, beforeFlush.pending)
+  const afterFlush = loadState(statePath)
+  check('a partial save keeps the flags, inputs and produced index',
+    afterFlush.watermarks.get('sess-1') === 43
+    && afterFlush.flags.mem_abc?.note === '看着像助手口吻'
+    && afterFlush.inputs['sess-1@7']?.text.includes('吃辣')
+    && afterFlush.produced.mem_abc?.inputKey === 'sess-1@7',
+    `flags=${Object.keys(afterFlush.flags).length} inputs=${Object.keys(afterFlush.inputs).length} produced=${Object.keys(afterFlush.produced).length}`)
+  check('the merge is not a resurrection: a cleared flag stays cleared',
+    (() => {
+      saveState(statePath, { flags: {} })
+      saveWatermarks(new Map([['sess-1', 44]]), statePath)
+      return Object.keys(loadState(statePath).flags).length === 0
+    })())
 
   // ── invocation ─────────────────────────────────────────────────────────────
   const inv = buildAddInvocation({ pythonPath: 'py.exe', projectDir: 'D:/x', user: 'u', agent: 'a' })

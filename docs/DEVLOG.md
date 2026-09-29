@@ -369,7 +369,40 @@ npm test   # smoke:package + smoke + smoke:extract 三套全绿
 
 ---
 
-## 13. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
+## 13. 0.9.1：部分写入抹掉兄弟键（真数据丢失，读线上文件才发现）
+
+**症状**：线的状态文件 `~/.dsh/storages/dsh-memvault-state.json` 只有
+`watermarks,diagnostics,pending` 三个键——`flags`、`inputs`、`produced` 全都不见了，
+而 0.8.0/0.9.0 明明写过它们。
+
+**根因**：`saveState` 用「只把我拿到的键拼成文档」的写法，而 `saveWatermarks`（窗口每次
+flush / persistPending / clearPending 都走它）只传 `{watermarks, diagnostics?, pending?}`。
+于是**每一次窗口记账都会重写整个文档，顺手抹掉它不认识的三个键**：
+
+```js
+const payload = {}                      // 从空开始
+if (watermarks) payload.watermarks = …
+if (flags) payload.flags = flags        // saveWatermarks 不传 → 键消失
+```
+
+后果分三级：复核标记（0.8.0）被静默清空；留存输入与反向索引（0.9.0）被清空，于是
+**「重抽」对早于本次修复的窗口永远不可用**；而面板上看起来一切正常——这正是最坏的一类
+bug：不报错、不抛异常，只是数据慢慢变少。
+
+**为什么测试没抓到**：面板套件验的是「标记后状态文件里有它」，没验「随后一次窗口 flush
+之后它还在」。**跨功能的顺序才是缺陷所在，而单功能的断言看不到顺序。**
+
+**修复**：`saveState` 改为**读盘再合并**（新增 `readStateDocument`），任何调用者都只能覆盖
+自己带的键，无法抹掉兄弟键。合并语义下「删除」必须用整份集合作表达——`flags`/`pending`/
+`inputs`/`produced` 本来就总是整份传入，所以语义没变。新增 4 条断言：整份写入六键齐全、
+部分写入后三键仍在、清空的标记不会被合并「复活」。
+
+**教训**（与 12.4 的 21/22 同类，但更贵）：**多个写入者共享一个文档时，「缺省即删除」是最
+危险的默认值**。要么由一个写入者持全量状态，要么写入即合并——不能两者都不做。
+
+---
+
+## 14. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
 
 要「优先参考源码」时，DSH 的包都在 `app.asar` 这个打包文件里，asar 只是「JSON 头 + 拼接的文件数据」：
 
