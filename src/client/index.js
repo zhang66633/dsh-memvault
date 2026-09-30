@@ -419,6 +419,204 @@ function ReviewCard({ refreshToken, onChanged, onError }) {
   )
 }
 
+const STRUCTURE_URL = '/memvault/api/structure'
+
+/** Node colour by memory type, so the graph and the bars agree. */
+const TYPE_COLOR = { user: C.brand, agent: C.ok, procedural: C.warn }
+
+/**
+ * A one-line stacked bar of a `{ user, agent, procedural }` count map.
+ *
+ * Widths are shares of that scope's own total, so two scopes with different sizes
+ * still compare by *shape* — which is the question the structure view answers.
+ */
+function TypeBar({ byType, height = 8 }) {
+  const total = Object.values(byType ?? {}).reduce((sum, n) => sum + n, 0)
+  if (total === 0) return null
+  return h('div', {
+    style: { display: 'flex', height, borderRadius: '4px', overflow: 'hidden', margin: '6px 0', background: C.layer2 },
+  }, Object.entries(byType).filter(([, n]) => n > 0).map(([type, n]) => h('span', {
+    key: type,
+    title: `${TYPE_LABEL[type] ?? type}: ${n}`,
+    style: { width: `${(n / total) * 100}%`, background: TYPE_COLOR[type] ?? C.idle },
+  })))
+}
+
+/**
+ * The relation graph, drawn as a circle.
+ *
+ * No force layout on purpose: a spring simulation needs an animation loop and a
+ * library, and for the job here — "which memories belong to the same contradiction
+ * cluster, and which are alone" — a ring with weighted edges is legible and
+ * deterministic (the same store draws the same picture twice).
+ */
+function RelationGraph({ graph, selectedId, onPick }) {
+  const nodes = graph?.nodes ?? []
+  if (nodes.length === 0) {
+    return h('div', { style: S.empty },
+      '还没有关系边。矛盾关系是在写入时由 MemVault 判定的，所以这块空着通常只说明“还没写入过互相冲突的事实”。')
+  }
+  const size = 440
+  const radius = size / 2 - 34
+  const place = new Map(nodes.map((node, index) => {
+    const angle = (index / nodes.length) * Math.PI * 2 - Math.PI / 2
+    return [node.id, [size / 2 + radius * Math.cos(angle), size / 2 + radius * Math.sin(angle)]]
+  }))
+  return h('svg', { viewBox: `0 0 ${size} ${size}`, style: { width: '100%', maxWidth: `${size}px`, display: 'block', margin: '0 auto' } },
+    (graph.edges ?? []).map((edge, index) => {
+      const from = place.get(edge.source)
+      const to = place.get(edge.target)
+      if (from === undefined || to === undefined) return null
+      const weight = Number(edge.weight) || 0
+      return h('line', {
+        key: `e${index}`,
+        x1: from[0], y1: from[1], x2: to[0], y2: to[1],
+        stroke: C.muted, strokeWidth: 0.5 + weight * 3, opacity: 0.2 + weight * 0.7,
+      })
+    }),
+    nodes.map((node) => {
+      const point = place.get(node.id)
+      const selected = node.id === selectedId
+      const r = (selected ? 9 : 5.5) + Math.min(4, node.degree ?? 0)
+      return h('g', { key: node.id, onClick: () => onPick(node), style: { cursor: 'pointer' } },
+        h('circle', {
+          cx: point[0], cy: point[1], r,
+          fill: TYPE_COLOR[node.type] ?? C.idle,
+          stroke: selected ? C.fg : node.flagged ? C.warn : 'none',
+          strokeWidth: selected ? 3 : node.flagged ? 2 : 0,
+        }),
+        h('title', null, `${node.id}\n${TYPE_LABEL[node.type] ?? node.type} · ${node.chars} 字符 · 度 ${node.degree}\n${node.text}`),
+      )
+    }),
+  )
+}
+
+/**
+ * The structure view: what the store is made of, not what is in it.
+ *
+ * Three questions a flat list cannot answer: which scope dimension holds what,
+ * which blocks actually reach the prompt, and how the contradiction graph is
+ * shaped (including the memories that have no edges at all — usually where a bad
+ * extraction hides, since nothing contradicts it).
+ */
+function StructureView({ onError }) {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState(null)
+  const [selected, setSelected] = useState(null)
+  const [loading, setLoading] = useState(false)
+
+  const load = () => {
+    setLoading(true)
+    fetch(STRUCTURE_URL)
+      .then(async (res) => ({ res, json: await res.json().catch(() => null) }))
+      .then(({ res, json }) => {
+        if (!res.ok || json?.ok !== true) setError(`HTTP ${res.status}${json?.error ? ` · ${json.error}` : ''}`)
+        else { setError(null); setData(json) }
+      })
+      .catch((err) => setError(String(err?.message ?? err)))
+      .finally(() => setLoading(false))
+  }
+  useEffect(load, [])
+  useEffect(() => { if (error) onError?.(error) }, [error, onError])
+
+  if (error) return h('div', { style: S.banner(C.err) }, `读取记忆结构失败：${error}`)
+  if (data === null) return h('div', { style: S.empty }, loading ? '读取中…' : '—')
+
+  const totals = data.totals ?? {}
+  const graph = data.graph ?? {}
+  const typeEntries = Object.entries(totals.byType ?? {}).filter(([, n]) => n > 0)
+
+  return h(Fragment, null,
+    h(Card, { title: '结构总览' },
+      h('div', { style: S.grid },
+        h(KV, { k: '记忆总数', v: String(totals.memories ?? 0) }),
+        h(KV, { k: '类型分布', v: typeEntries.map(([type, n]) => `${TYPE_LABEL[type] ?? type} ${n}`).join(' · ') || '—' }),
+        h(KV, { k: '待复核', v: String(totals.flagged ?? 0) }),
+        h(KV, { k: '自动改型', v: String(totals.retyped ?? 0) }),
+        h(KV, { k: '核心块', v: `${totals.blocks ?? 0} 个 · 其中 ${totals.injectedBlocks ?? 0} 个在注入范围内` }),
+        h(KV, { k: '关系', v: `${graph.totalEdges ?? 0} 条边 · ${graph.isolated ?? 0} 条记忆完全孤立` }),
+      ),
+      data.initialized === false && h('div', { style: { ...S.hint, marginTop: '8px' } },
+        '这个库还没有任何表——要么还没写入过，要么 dbPath 指向了一个新文件。'),
+      graph.sampled && h('div', { style: { ...S.hint, marginTop: '8px' } },
+        `图已截断：显示 ${graph.nodes.length} / ${graph.totalNodes} 个节点、${graph.edges.length} / ${graph.totalEdges} 条边（按度数取前若干，避免线团）。`),
+      h('div', { style: { ...S.rowActions, marginTop: '10px' } },
+        h('button', { style: S.small(C.brand), disabled: loading, onClick: load }, loading ? '刷新中…' : '刷新'),
+        h('span', { style: S.hint }, '作用域是**维度**不是分区：同一行同时属于 user 与 agent，所以两栏的数字会重复计数——这就是隔离模型的真实形状。'),
+      ),
+    ),
+
+    h('div', { style: S.grid },
+      (data.dimensions ?? []).filter((dim) => dim.values.length > 0).map((dim) =>
+        h(Card, { key: dim.key, title: `${dim.key} 维度（${dim.values.length}）` },
+          dim.values.slice(0, 8).map((value) => h('div', { key: value.id, style: S.block },
+            h('div', { style: S.blockHead },
+              h('span', { style: S.badge(C.idle) }, dim.key),
+              h('span', { style: S.mono }, value.id),
+              h('span', { style: S.spacer }),
+              h('span', { style: S.badge(C.idle) }, `${value.memories} 条记忆`),
+              value.blocks.length > 0 && h('span', { style: S.badge(C.brand) }, `${value.blocks.length} 块`),
+            ),
+            h(TypeBar, { byType: value.byType }),
+            value.blocks.length > 0 && h('div', { style: { marginTop: '6px' } },
+              value.blocks.map((block) => h('div', { key: block.label, style: { marginTop: '4px' } },
+                h('div', { style: { ...S.hint, display: 'flex', gap: '6px', alignItems: 'center' } },
+                  h('span', { style: S.mono }, block.label),
+                  h('span', { style: S.badge(block.injected ? C.ok : C.idle) }, block.injected ? '已注入' : '未注入'),
+                  h('span', { style: S.spacer }),
+                  h('span', null, `${block.chars} / ${block.limit}`),
+                ),
+                h('div', { style: { height: '4px', background: C.layer2, borderRadius: '2px', marginTop: '2px' } },
+                  h('div', {
+                    style: {
+                      width: `${Math.min(100, Math.round((block.chars / Math.max(1, block.limit)) * 100))}%`,
+                      height: '100%', borderRadius: '2px',
+                      background: block.chars > block.limit * 0.9 ? C.warn : C.ok,
+                    },
+                  })),
+              )),
+            ),
+          )),
+        ),
+      ),
+    ),
+
+    h(Card, { title: `关系图（${graph.nodes.length} 个节点 / ${graph.edges.length} 条边）` },
+      h(RelationGraph, { graph, selectedId: selected?.id, onPick: setSelected }),
+      h('div', { style: { ...S.hint, marginTop: '8px' } },
+        '节点=记忆，连线=矛盾关系，线宽与不透明度随权重；节点大小随度数。点一个节点看它本身，详情里能看到完整的 ADD/UPDATE/DELETE 审计链。'),
+    ),
+
+    selected && h(Card, { title: '选中的记忆' },
+      h('div', { style: S.blockHead },
+        h('span', { style: S.badge(TYPE_COLOR[selected.type] ?? C.idle) }, TYPE_LABEL[selected.type] ?? selected.type),
+        h('span', { style: S.mono, title: selected.id }, `${String(selected.id).slice(0, 12)}…`),
+        h('span', { style: S.badge(C.idle) }, `${selected.chars} 字符 · 度 ${selected.degree}`),
+        selected.flagged && h('span', { style: S.badge(C.warn) }, '待复核'),
+        selected.retyped && h('span', { style: S.badge(C.idle) }, '自动改型'),
+        h('span', { style: S.spacer }),
+        h(CopyId, { id: selected.id }),
+      ),
+      h('div', { style: S.body }, selected.text),
+      h(MemoryDetails, { id: selected.id }),
+    ),
+
+    h(Card, { title: '权重最高的关系' },
+      (data.topRelations ?? []).length === 0
+        ? h('div', { style: S.empty }, '没有关系边。')
+        : (data.topRelations ?? []).map((pair, index) => h('div', { key: index, style: { ...S.block, marginTop: '6px' } },
+          h('div', { style: { ...S.hint, display: 'flex', gap: '6px', alignItems: 'center' } },
+            h('span', { style: S.badge(C.brand) }, pair.weight.toFixed(3)),
+            h('span', { style: S.spacer }),
+            h('span', { style: S.mono }, `${String(pair.a.id).slice(0, 8)} ↔ ${String(pair.b.id).slice(0, 8)}`),
+          ),
+          h('div', { style: { ...S.hint, marginTop: '2px' } }, `A: ${pair.a.text}`),
+          h('div', { style: { ...S.hint, marginTop: '2px' } }, `B: ${pair.b.text}`),
+        )),
+    ),
+  )
+}
+
 /** One row of the browse list, with its provenance and review controls. */
 function MemoryRow({ row, flagged, busy, onFlag, onError, window: producedBy }) {
   const [open, setOpen] = useState(false)
@@ -744,6 +942,10 @@ function MemoryPanel() {
           style: S.small(view === 'memories' ? C.brand : C.muted, view === 'memories'),
           onClick: () => setView('memories'),
         }, '浏览记忆'),
+        h('button', {
+          style: S.small(view === 'structure' ? C.brand : C.muted, view === 'structure'),
+          onClick: () => setView('structure'),
+        }, '结构'),
       ),
 
       view === 'blocks' ? h(Fragment, null,
@@ -814,7 +1016,8 @@ function MemoryPanel() {
               ]),
             ),
       ),
-      ) : h(MemoriesView, { key: memoryIds, onError: setError, initialIds: memoryIds }),
+      ) : view === 'structure' ? h(StructureView, { onError: setError })
+        : h(MemoriesView, { key: memoryIds, onError: setError, initialIds: memoryIds }),
     ),
   )
 }

@@ -33,6 +33,7 @@ import {
   REPLAY_PATH,
   REVIEW_PATH,
   STATUS_PATH,
+  STRUCTURE_PATH,
   buildStatus,
   createPanelApi,
   isTrustedRequest,
@@ -63,6 +64,7 @@ import {
 } from '../lib/review.js'
 import { PRODUCED_TEXT_CLAMP, shapeProduced } from '../lib/extract.js'
 import { countRetyped } from '../lib/memories.js'
+import { buildStructure } from '../lib/structure.js'
 import { runCli } from '../lib/cli.js'
 import {
   BLOCK_LABEL_MAX,
@@ -451,10 +453,11 @@ try {
     children.length === 1 && children[0].deps.join(',') === 'webServer', JSON.stringify(children.map((c) => c.deps)))
 
   children[0].callback(childCtx)
-  check('all nine exact routes are registered',
+  check('all ten exact routes are registered',
     routes.has(STATUS_PATH) && routes.has(REFRESH_PATH) && routes.has(BLOCKS_PATH)
     && routes.has(FLUSH_PATH) && routes.has(MEMORIES_PATH) && routes.has(MEMORY_PATH)
-    && routes.has(FLAG_PATH) && routes.has(REVIEW_PATH) && routes.has(REPLAY_PATH),
+    && routes.has(FLAG_PATH) && routes.has(REVIEW_PATH) && routes.has(REPLAY_PATH)
+    && routes.has(STRUCTURE_PATH),
     [...routes.keys()].join(', '))
 
   const call = async (path, method = 'GET', body = null, headers = { host: '127.0.0.1:19387' }) => {
@@ -1068,6 +1071,96 @@ try {
     check('replaying the same text updates the same rows instead of duplicating them',
       replayIds.join(',') === originalIds.join(',') && rowsAfter === rowsBeforeReplay,
       `original=${originalIds.join(',')} replay=${replayIds.join(',')} rows ${rowsBeforeReplay} -> ${rowsAfter}`)
+
+    // ── the structure view (2026-10-01) ──────────────────────────────────────
+    const structure = await hit(STRUCTURE_PATH)
+    check('the structure route answers with totals and dimensions',
+      structure.code === 200 && structure.body.ok === true
+      && structure.body.totals.memories >= 2 && structure.body.initialized !== false
+      && structure.body.dimensions.find((d) => d.key === 'user')?.values.some((v) => v.id === 'lenovo'),
+      JSON.stringify(structure.body.totals))
+    check('the structure route is GET only', (await hit(STRUCTURE_PATH, { method: 'POST' })).code === 405)
+    check('dimension counts are per dimension, so the same row appears under user and agent',
+      (() => {
+        const dims = structure.body.dimensions
+        const user = dims.find((d) => d.key === 'user')?.values.reduce((sum, v) => sum + v.memories, 0) ?? -1
+        const agent = dims.find((d) => d.key === 'agent')?.values.reduce((sum, v) => sum + v.memories, 0) ?? -1
+        return user === structure.body.totals.memories && agent === structure.body.totals.memories
+      })(),
+      JSON.stringify(structure.body.dimensions.map((d) => [d.key, d.values.length])))
+    check('every drawn edge points at a drawn node (dangling edges are dropped)',
+      structure.body.graph.edges.every((edge) =>
+        structure.body.graph.nodes.some((node) => node.id === edge.source)
+        && structure.body.graph.nodes.some((node) => node.id === edge.target)))
+    check('isolated memories are counted with the graph',
+      typeof structure.body.graph.isolated === 'number'
+      && structure.body.graph.isolated <= structure.body.totals.memories,
+      `isolated=${structure.body.graph.isolated} of ${structure.body.totals.memories}`)
+
+    // A store path that does not exist is a fresh install, not an error.
+    const missingChildren = []
+    applyHost({ ...ctx, inject: (deps, cb) => missingChildren.push({ deps, cb }) }, {
+      dbPath: join(dir, 'not-created-yet.db'),
+      panel: { writes: false },
+      extract: { enabled: false, statePath: join(dir, 'missing-state.json') },
+    })
+    const missingRoutes = new Map()
+    missingChildren[0].cb({
+      effect: (fn) => fn(),
+      webServer: { register: (r) => { missingRoutes.set(r.path, r); return () => {} } },
+    })
+    const missing = { code: null, body: null }
+    await missingRoutes.get(STRUCTURE_PATH).handler(
+      { headers: { host: '127.0.0.1:19387' }, method: 'GET', on() {} },
+      { writeHead(code) { missing.code = code }, end(payload) { missing.body = JSON.parse(payload) } },
+    )
+    check('a store that does not exist yet reads as not-initialized, not as an error',
+      missing.code === 200 && missing.body.initialized === false && missing.body.totals.memories === 0,
+      JSON.stringify(missing.body.totals))
+
+    // Pure edge cases on a synthetic store: blocks/injected marks, the retype
+    // marker on a node, a dangling relation, and a half-created schema.
+    const synthetic = join(dir, 'structure.db')
+    {
+      const seed = new DatabaseSync(synthetic)
+      seed.exec('CREATE TABLE memories (id TEXT PRIMARY KEY, user_id TEXT, agent_id TEXT, run_id TEXT, memory TEXT, memory_type TEXT, metadata TEXT)')
+      seed.exec('CREATE TABLE blocks (scope_type TEXT, scope_id TEXT, label TEXT, value TEXT, value_limit INTEGER, position INTEGER)')
+      seed.exec('CREATE TABLE relations (source_id TEXT, target_id TEXT, weight REAL)')
+      seed.exec(`INSERT INTO memories VALUES
+        ('m1','u','a',NULL,'用户喜欢简洁的回答','user','{}'),
+        ('m2','u','a',NULL,'用户不喜欢冗长的回答','user','{"retyped_from": "user"}'),
+        ('m3','u','a',NULL,'孤立的一条','procedural','{}')`)
+      seed.exec(`INSERT INTO blocks VALUES ('user','u','persona','简洁',2000,0),('agent','a','project','本仓库约定',2000,0)`)
+      seed.exec(`INSERT INTO relations VALUES ('m1','m2',0.77),('m1','gone',0.5)`)
+      seed.close()
+    }
+    const built = buildStructure({ dbPath: synthetic, injectedScopes: ['user/u'], flags: { m2: { at: 'x' } }, retypedCount: 1 })
+    check('blocks are grouped into their dimension value and marked as injected or not',
+      built.totals.blocks === 2 && built.totals.injectedBlocks === 1
+      && built.dimensions.find((d) => d.key === 'agent')?.values[0]?.blocks[0]?.injected === false,
+      JSON.stringify(built.totals))
+    check('a retyped node and a flagged node are marked in the graph',
+      built.graph.nodes.find((n) => n.id === 'm2')?.retyped === true
+      && built.graph.nodes.find((n) => n.id === 'm2')?.flagged === true)
+    check('the dangling relation is dropped and the isolated row is counted',
+      built.graph.edges.length === 1 && built.graph.isolated === 1
+      && built.topRelations.length === 1 && built.topRelations[0].weight === 0.77,
+      JSON.stringify({ edges: built.graph.edges.length, isolated: built.graph.isolated }))
+    check('node text is clamped for the graph', built.graph.nodes.every((n) => n.text.length <= 121))
+
+    // A half-created store (memories but no blocks/relations) must still render.
+    const half = join(dir, 'half.db')
+    {
+      const seed = new DatabaseSync(half)
+      seed.exec('CREATE TABLE memories (id TEXT PRIMARY KEY, user_id TEXT, agent_id TEXT, run_id TEXT, memory TEXT, memory_type TEXT)')
+      seed.exec("INSERT INTO memories VALUES ('h1','u','a',NULL,'只有记忆表','user')")
+      seed.close()
+    }
+    const halfBuilt = buildStructure({ dbPath: half })
+    check('a store missing the blocks/relations tables still renders',
+      halfBuilt.totals.memories === 1 && halfBuilt.totals.blocks === 0
+      && halfBuilt.graph.edges.length === 0 && halfBuilt.graph.isolated === 1,
+      JSON.stringify(halfBuilt.totals))
 
     // A read-only panel cannot replay: it writes the store.
     const noReplayChildren = []

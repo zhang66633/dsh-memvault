@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.3-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.4-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -49,6 +49,7 @@
 | 🧾 **每个旋钮只描述一次** | 一份 spec（`lib/config.js`）同时产出代码默认值、DSH 用来校验的 `Config` schema、以及 Plugins 页渲染的设置项——默认值之间不可能互相漂移，patch 里写错的键/值也会出现在面板上而不是只进 host 日志 |
 | 🎛️ **一个真面板** | 会话页签环里的 **记忆** 页签 + Settings → Plugins 里的一页：当前注入的块（label、作用域、字符数与它的存储上限、原文）、读预算与缓存年龄、抽取旋钮、有水位线的会话数、最近 5 次抽取结果，外加一个跳过 30 秒 TTL 的 **立即重读** 按钮 |
 | ✏️ **核心块可编辑** | 每个块都有 编辑 / 删除，另有一个新增表单。写入是按 `(scope_type, scope_id, label)` 的 upsert，写完立刻让渲染缓存失效，所以下一步就已经看得到；`panel.writes: false` 可以把整个面板变回只读 |
+| 🔭 **看清记忆结构** | 第三个视图回答列表回答不了的问题：各个作用域**维度**里各有什么（而且同一行会同时计入 `user` 与 `agent`——作用域是维度、不是分区）、哪些核心块**真的在注入**（对比只是存在库里）、关系图长什么样——节点大小随度数、连线粗细随权重，还会告诉你多少条记忆**完全没有边**。点节点直接展开它的完整审计链 |
 | 🔎 **浏览库里存了什么** | 第二个视图对 `memories` 表做子串检索，带类型/作用域过滤与翻页，并显示类型、作用域、时间与 id（一键复制，方便交给工具调用处理）。被库自身**自动改型**过的行会带一个徽标，还可以勾选「只看自动改型」把它们挑出来——启发式判定不该静默生效，判错了你就在那里标为待复核。它是**浏览**不是召回——语义召回仍然交给模型的 `memory_search`——而且从不 SELECT embedding blob |
 | 🧾 **可追溯、可复核** | 每次抽取都记录**它产出了哪些记忆**，所以一个窗口能直接跳到它的行（「看这 2 条产出」）。每条可以展开来源：MemVault 自己的审计（`history`：ADD/UPDATE/DELETE 连同新旧文本）与它参与的矛盾关系（`relations`），还可以**标为待复核**。标记是本插件状态，库完全不动 |
 | ♻️ **能动手的复核闭环** | 复核队列会把每条标记连同它的窗口与留存原文列出来，并且可以**就地取消标记**。两个动作：**复制修正请求**把 id、原文、来源交给模型（模型提议，DSH 的批准是那道门），以及**重抽**——把那个窗口的文本重新交给 MemVault 自己的管线，可以先把文本改对，也可以换抽取器。重抽是面板唯一会写库的动作，而且它走的是 `add()`，不绕过去 |
@@ -157,6 +158,7 @@ npm test          # lib/client.js 过期会直接失败
 | `/memvault/api/flag` | `POST` | 标记/取消标记一条待复核记忆：`{ id, flagged: true \| false, note? }`。写的是**本插件自己的状态文件**——MemVault 完全不动——返回整个有界标记表。`panel.writes: false` 时回 403 |
 | `/memvault/api/review` | `GET` | 复核队列：每条标记记忆 + 它的来源 + 产出它的窗口 + 该窗口原文是否还在（`replayable`）；在的时候带上 `inputText`；以及 `request`——一份可直接粘给模型的说明（id、原文、来源俱全） |
 | `/memvault/api/replay` | `POST` | 重抽某份留存原文：`{ key, text?, extractor?: 'inherit' \| 'rule' \| 'llm' }`。回 **202**，因为活儿是排队跑的；结果以一条 `replayOf` 诊断出现。它通过 MemVault 自己的 `add()` 写库；`panel.writes: false` 时回 403 |
+| `/memvault/api/structure` | `GET` | 记忆结构：每个作用域维度的记忆与类型分布、核心块及其占用（`chars / value_limit`、是否在注入范围内）、关系图的节点与边（节点上限 120、边 120，按度数/权重截断并回报 `sampled`）、权重最高的 10 条关系，以及**完全没有关系边**的记忆条数。库文件还不存在时回 200 + `initialized: false`（新装是正常态，不是错误） |
 
 三个 handler 都会拒绝非 loopback `Host`、`Origin` 不匹配（浏览器发了才有）、以及 `Sec-Fetch-Site: cross-site` 的请求（回 403）。它们是 `exact` 路由，所以先于 shell 的 index/`/api` handler 命中。非法 action、非法的作用域类型、空值、超长值都在起进程之前就回 400；CLI 失败回 502。
 

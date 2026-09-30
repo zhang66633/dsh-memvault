@@ -127,6 +127,8 @@ check('flagging refreshes the review card in place',
   flagHandler ? 'flag handler found' : 'flag handler not found')
 check('the built bundle offers un-flagging from the review queue',
   clientBundle.includes('取消标记') && existsSync(join(root, pkg.exports['./client'])))
+check('the built bundle carries the structure view',
+  clientBundle.includes('/memvault/api/structure') && clientBundle.includes('关系图'))
 
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `FAILED: ${failures.join(', ')}`}`)
 process.exit(failures.length === 0 ? 0 : 1)
