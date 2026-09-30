@@ -129,6 +129,8 @@ check('the built bundle offers un-flagging from the review queue',
   clientBundle.includes('取消标记') && existsSync(join(root, pkg.exports['./client'])))
 check('the built bundle carries the structure view',
   clientBundle.includes('/memvault/api/structure') && clientBundle.includes('关系图'))
+check('the built bundle states where the paths can be changed',
+  clientBundle.includes('位置与初始化') && clientBundle.includes('两个改动入口'))
 
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `FAILED: ${failures.join(', ')}`}`)
 process.exit(failures.length === 0 ? 0 : 1)

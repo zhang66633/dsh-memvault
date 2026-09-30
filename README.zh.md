@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.4-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.5-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -49,6 +49,7 @@
 | 🧾 **每个旋钮只描述一次** | 一份 spec（`lib/config.js`）同时产出代码默认值、DSH 用来校验的 `Config` schema、以及 Plugins 页渲染的设置项——默认值之间不可能互相漂移，patch 里写错的键/值也会出现在面板上而不是只进 host 日志 |
 | 🎛️ **一个真面板** | 会话页签环里的 **记忆** 页签 + Settings → Plugins 里的一页：当前注入的块（label、作用域、字符数与它的存储上限、原文）、读预算与缓存年龄、抽取旋钮、有水位线的会话数、最近 5 次抽取结果，外加一个跳过 30 秒 TTL 的 **立即重读** 按钮 |
 | ✏️ **核心块可编辑** | 每个块都有 编辑 / 删除，另有一个新增表单。写入是按 `(scope_type, scope_id, label)` 的 upsert，写完立刻让渲染缓存失效，所以下一步就已经看得到；`panel.writes: false` 可以把整个面板变回只读 |
+| 🧭 **初始化时就知道路径** | 面板显示当前生效的库文件、插件状态文件、Python 与项目目录，库文件是否存在（及大小、最后修改），以及「读的作用域」与「写的作用域」分别是什么——并写明唯一两个改动入口：DSH 插件配置与 MemVault 的 `.env`。库文件不存在时会明说“首次写入时创建”，因为**路径写错**与**库是空的**在一行计数里长得一模一样 |
 | 🔭 **看清记忆结构** | 第三个视图回答列表回答不了的问题：各个作用域**维度**里各有什么（而且同一行会同时计入 `user` 与 `agent`——作用域是维度、不是分区）、哪些核心块**真的在注入**（对比只是存在库里）、关系图长什么样——节点大小随度数、连线粗细随权重，还会告诉你多少条记忆**完全没有边**。点节点直接展开它的完整审计链 |
 | 🔎 **浏览库里存了什么** | 第二个视图对 `memories` 表做子串检索，带类型/作用域过滤与翻页，并显示类型、作用域、时间与 id（一键复制，方便交给工具调用处理）。被库自身**自动改型**过的行会带一个徽标，还可以勾选「只看自动改型」把它们挑出来——启发式判定不该静默生效，判错了你就在那里标为待复核。它是**浏览**不是召回——语义召回仍然交给模型的 `memory_search`——而且从不 SELECT embedding blob |
 | 🧾 **可追溯、可复核** | 每次抽取都记录**它产出了哪些记忆**，所以一个窗口能直接跳到它的行（「看这 2 条产出」）。每条可以展开来源：MemVault 自己的审计（`history`：ADD/UPDATE/DELETE 连同新旧文本）与它参与的矛盾关系（`relations`），还可以**标为待复核**。标记是本插件状态，库完全不动 |

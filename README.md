@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.4-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.5-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -49,6 +49,7 @@ The plugin does three things:
 | 🧾 **Every knob described once** | One spec (`lib/config.js`) produces the code defaults, the `Config` schema DSH validates against, and the settings the Plugins page renders — so a default cannot drift between them, and a typo in a patch shows up in the panel instead of only in the log |
 | 🎛️ **A real panel** | A **记忆** tab in the conversation ring and a page under Settings → Plugins: the blocks currently injected (label, scope, characters against their stored limit, text), the read budget and cache age, the extraction knobs, sessions with a watermark, and the last five extraction outcomes — plus a **立即重读** button that ignores the 30 s render TTL |
 | ✏️ **Editable core blocks** | 编辑 / 删除 on any block, and a form to create one. A write is an upsert keyed by `(scope_type, scope_id, label)`, it drops the render cache so the next step already sees it, and `panel.writes: false` turns the whole thing read-only |
+| 🧭 **Know your paths at setup** | The panel shows which store file, plugin state file, Python and project directory are in play, whether the store file exists (and its size), and which scopes are **read** versus **written** — plus the only two places to change any of it: the DSH plugin config or MemVault's `.env`. A missing store file is called out as "created on the first write", because a wrong path and an empty store look identical in a row count |
 | 🔭 **See the structure** | A third view answers what a list cannot: which scope **dimensions** hold what (and that one row counts under both `user` and `agent` — scopes are dimensions, not a partition), which core blocks are actually injected versus merely stored, and how the relation graph is shaped — nodes sized by degree, edges by weight, plus how many memories have **no** edge at all. Clicking a node opens its full audit chain |
 | 🔎 **Browse what is stored** | A second view searches the `memories` table by substring with type/scope filters and paging, showing type, scope, age and the id (one click to copy, so a tool call can act on it). Rows the store **retyped** on its own carry a badge, and "only retyped" lists exactly those — a heuristic verdict should not be silent, so a wrong one can be marked for review right there. It is a **browse**, not retrieval — semantic recall stays with the model's `memory_search` — and it never selects the embedding blob |
 | 🧾 **Trace and review** | Every extraction records **which memories it produced**, so a window links to its rows ("看这 2 条产出"). Each row can open its provenance — MemVault's own audit trail (`history`: ADD/UPDATE/DELETE with old and new text) and the contradictions it takes part in (`relations`) — and can be **marked for review**. Flags are plugin state: the store is never touched |

@@ -122,6 +122,14 @@ function fmtAge(ms) {
   return `${Math.round(ms / 60000)} min`
 }
 
+/** File sizes for the setup card: one SQLite store is normally KB–MB. */
+function fmtBytes(bytes) {
+  const n = Number(bytes) || 0
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(2)} MB`
+}
+
 /** One core block, with inline editing when the panel is allowed to write. */
 function BlockRow({ block, writable, busy, onWrite }) {
   const [editing, setEditing] = useState(false)
@@ -959,6 +967,32 @@ function MemoryPanel() {
           h(KV, { k: 'label 过滤', v: read?.labels?.length ? read.labels.join(', ') : '全部' }),
           h(KV, { k: '库文件', v: read?.dbPath }),
         ),
+      ),
+
+      h(Card, { title: '位置与初始化' },
+        h('div', { style: S.grid },
+          h(KV, { k: '库文件（读）', v: read?.dbPath }),
+          h(KV, {
+            k: '文件状态',
+            v: data?.db
+              ? (data.db.exists
+                ? `存在 · ${fmtBytes(data.db.bytes)}${data.db.modifiedAt ? ` · 更新于 ${fmtAge(Date.now() - Date.parse(data.db.modifiedAt))}前` : ''}`
+                : '不存在（写入第一条记忆时创建；若路径写错会一直是这个状态）')
+              : '—',
+          }),
+          h(KV, { k: '状态文件（插件）', v: extract?.statePath }),
+          h(KV, { k: 'Python', v: extract?.pythonPath }),
+          h(KV, { k: '项目目录（子进程 cwd）', v: extract?.projectDir }),
+          h(KV, { k: '注入作用域', v: read?.scopes?.join('  ') || '—' }),
+          h(KV, {
+            k: '写入作用域',
+            v: extract ? `user=${extract.user || '—'} agent=${extract.agent || '—'}` : '—',
+          }),
+        ),
+        h('div', { style: { ...S.hint, marginTop: '8px' } },
+          '这些值只有两个改动入口：DSH 插件配置（read.dbPath / read.scopes / extract.user / extract.agent / extract.projectDir …）或 MemVault 的 .env（MEMVAULT_DB_PATH / MEMVAULT_DEFAULT_* / MEMVAULT_SCOPE_*）。面板只显示不改——两处都能改的话，最难查的就是"到底是哪个在生效"。记忆条数与结构见「结构」页。'),
+        (data?.db && data.db.exists === false) && h('div', { style: { ...S.banner(C.warn), marginTop: '8px' } },
+          '库文件还不存在：写入第一条记忆（或按一次「立即抽取」）就会创建。如果这不是你期望的位置，去 DSH 插件配置里改 read.dbPath（服务端那半边看 .env 的 MEMVAULT_DB_PATH）。'),
       ),
 
       h(Card, { title: `核心块（${data?.blocks?.length ?? 0}）` },

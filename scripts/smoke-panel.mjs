@@ -75,7 +75,7 @@ import {
   validateBlockAction,
 } from '../lib/blocks-write.js'
 import { loadState, saveWatermarks } from '../lib/extract.js'
-import { DEFAULT_EXTRACT, apply as applyHost, name as hostName } from '../lib/index.js'
+import { DEFAULT_EXTRACT, apply as applyHost, dbFileInfo, name as hostName } from '../lib/index.js'
 import { wrapClientBundle } from './build-client.mjs'
 
 /**
@@ -1071,6 +1071,15 @@ try {
     check('replaying the same text updates the same rows instead of duplicating them',
       replayIds.join(',') === originalIds.join(',') && rowsAfter === rowsBeforeReplay,
       `original=${originalIds.join(',')} replay=${replayIds.join(',')} rows ${rowsBeforeReplay} -> ${rowsAfter}`)
+
+    // ── setup facts: which file is actually behind the configured path ────────
+    check('status reports the store file, and it exists for this run',
+      (await hit(STATUS_PATH)).body.db?.exists === true
+      && (await hit(STATUS_PATH)).body.db.bytes > 0,
+      JSON.stringify((await hit(STATUS_PATH)).body.db))
+    check('a path with no file behind it reports exists:false rather than throwing',
+      dbFileInfo(join(dir, 'definitely-not-here.db')).exists === false
+      && dbFileInfo(join(dir, 'definitely-not-here.db')).bytes === 0)
 
     // ── the structure view (2026-10-01) ──────────────────────────────────────
     const structure = await hit(STRUCTURE_PATH)
