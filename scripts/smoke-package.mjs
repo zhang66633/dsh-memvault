@@ -112,5 +112,21 @@ check('the build script is declared', typeof pkg.scripts?.build === 'string', St
 check('the client half declares no unneeded externals',
   pkg.dsh?.client?.external === undefined || pkg.dsh.client.external.length === 0)
 
+// ── panel UI guards (source level) ──────────────────────────────────────────
+// The panel is browser code, so Node tests cannot exercise it; these two pin the
+// fixes for the 2026-09-29 field report against a silent revert:
+//   1. flagging a row must refresh the 待复核 card in the same view
+//      (the queue refetches on this token, so the bump has to sit in the flag
+//      handler — it used to exist only in the replay path);
+//   2. the queue itself must offer a way to clear a mark, instead of forcing the
+//      user to leave the view and toggle it in the browse list.
+const clientSource = readFileSync(join(root, 'src/client/index.js'), 'utf8')
+const flagHandler = /const flagRow = async[\s\S]*?\n  \}/.exec(clientSource)?.[0] ?? ''
+check('flagging refreshes the review card in place',
+  flagHandler.includes('setData(') && flagHandler.includes('setReviewToken((n) => n + 1)'),
+  flagHandler ? 'flag handler found' : 'flag handler not found')
+check('the built bundle offers un-flagging from the review queue',
+  clientBundle.includes('取消标记') && existsSync(join(root, pkg.exports['./client'])))
+
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `FAILED: ${failures.join(', ')}`}`)
 process.exit(failures.length === 0 ? 0 : 1)

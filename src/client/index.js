@@ -320,6 +320,39 @@ function ReviewCard({ refreshToken, onChanged, onError }) {
     setExtractor('inherit')
   }
 
+  /**
+   * Clear a review mark from the queue itself.
+   *
+   * Without this, the only way to un-flag was to leave the review view, find the
+   * row in the browse list and toggle it there — which is backwards: the queue is
+   * where a human decides "this one is fine after all".
+   *
+   * It clears the *flag*, never the memory: deleting or rewriting a stored fact
+   * still goes through the model and DSH's approval, which is the boundary the
+   * whole panel is built around.
+   */
+  const unflag = async (id) => {
+    setBusy(true)
+    try {
+      const res = await fetch(FLAG_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id, flagged: false }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || json?.ok !== true) setError(`HTTP ${res.status}${json?.error ? ` · ${json.error}` : ''}`)
+      else {
+        setError(null)
+        load() // the queue shrank — re-read it, don't guess
+        onChanged?.() // and let the browse view refresh its badges/counter too
+      }
+    } catch (err) {
+      setError(String(err?.message ?? err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const runReplay = async () => {
     if (!window.confirm('重抽会把这段对话重新交给 MemVault（走它自己的判定，可能新增一条、也可能更新已有的一条）。继续？')) return
     setBusy(true)
@@ -357,6 +390,7 @@ function ReviewCard({ refreshToken, onChanged, onError }) {
         item.note && h('span', { style: S.badge(C.idle) }, item.note),
         h('span', { style: S.spacer }),
         item.replayable && h('button', { style: S.small(C.brand), onClick: () => openReplay(item) }, '重抽这个窗口'),
+        h('button', { style: S.small(C.muted), disabled: busy, onClick: () => unflag(item.id) }, '取消标记'),
         h(CopyId, { id: item.id }),
       ),
       h('div', { style: S.body }, item.memory),
@@ -474,7 +508,14 @@ function MemoriesView({ onError, initialIds = '' }) {
       })
       const json = await res.json().catch(() => null)
       if (!res.ok || json?.ok !== true) setError(`HTTP ${res.status}${json?.error ? ` · ${json.error}` : ''}`)
-      else { setError(null); setData((current) => ({ ...current, flags: json.flags, flaggedCount: json.flaggedCount })) }
+      else {
+        setError(null)
+        setData((current) => ({ ...current, flags: json.flags, flaggedCount: json.flaggedCount }))
+        // The queue lives in its own component and only refetches when this token
+        // changes; without the bump, flagging a row left the 待复核 card stale
+        // until the view was left and re-entered (reported 2026-09-29).
+        setReviewToken((n) => n + 1)
+      }
     } catch (err) {
       setError(String(err?.message ?? err))
     } finally {

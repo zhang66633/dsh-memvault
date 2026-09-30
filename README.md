@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.1-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.2-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -51,7 +51,7 @@ The plugin does three things:
 | ✏️ **Editable core blocks** | 编辑 / 删除 on any block, and a form to create one. A write is an upsert keyed by `(scope_type, scope_id, label)`, it drops the render cache so the next step already sees it, and `panel.writes: false` turns the whole thing read-only |
 | 🔎 **Browse what is stored** | A second view searches the `memories` table by substring with type/scope filters and paging, showing type, scope, age and the id (one click to copy, so a tool call can act on it). It is a **browse**, not retrieval — semantic recall stays with the model's `memory_search` — and it never selects the embedding blob |
 | 🧾 **Trace and review** | Every extraction records **which memories it produced**, so a window links to its rows ("看这 2 条产出"). Each row can open its provenance — MemVault's own audit trail (`history`: ADD/UPDATE/DELETE with old and new text) and the contradictions it takes part in (`relations`) — and can be **marked for review**. Flags are plugin state: the store is never touched |
-| ♻️ **A review loop that can act** | The queue resolves each flagged memory with its window and retained input. Two actions: **复制修正请求** hands the model the ids, texts and provenance (it proposes; DSH's approval is the gate), and **重抽** sends that window's text through MemVault's own pipeline again — optionally edited, optionally with the other extractor. Replay is the panel's one store-writing action, and it writes through `add()`, never around it |
+| ♻️ **A review loop that can act** | The queue resolves each flagged memory with its window and retained input, and a mark can be **cleared right there**. Two actions: **复制修正请求** hands the model the ids, texts and provenance (it proposes; DSH's approval is the gate), and **重抽** sends that window's text through MemVault's own pipeline again — optionally edited, optionally with the other extractor. Replay is the panel's one store-writing action, and it writes through `add()`, never around it |
 | 🖥️ **Host half needs no browser** | The panel is optional: `webServer` is taken with `ctx.inject`, so a headless composition still injects memory and simply never registers the routes |
 | 🛟 **Fail-soft by design** | An unreadable store serves the last good text and warns once; a broken extraction never fails a turn and never poisons the next one |
 | 🔍 **Observable from outside** | Watermarks and the last five extraction diagnostics are written atomically to one JSON file, so "hook never fired" is distinguishable from "turn too short" from "ran and found nothing" |

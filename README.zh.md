@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.1-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.2-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -51,7 +51,7 @@
 | ✏️ **核心块可编辑** | 每个块都有 编辑 / 删除，另有一个新增表单。写入是按 `(scope_type, scope_id, label)` 的 upsert，写完立刻让渲染缓存失效，所以下一步就已经看得到；`panel.writes: false` 可以把整个面板变回只读 |
 | 🔎 **浏览库里存了什么** | 第二个视图对 `memories` 表做子串检索，带类型/作用域过滤与翻页，并显示类型、作用域、时间与 id（一键复制，方便交给工具调用处理）。它是**浏览**不是召回——语义召回仍然交给模型的 `memory_search`——而且从不 SELECT embedding blob |
 | 🧾 **可追溯、可复核** | 每次抽取都记录**它产出了哪些记忆**，所以一个窗口能直接跳到它的行（「看这 2 条产出」）。每条可以展开来源：MemVault 自己的审计（`history`：ADD/UPDATE/DELETE 连同新旧文本）与它参与的矛盾关系（`relations`），还可以**标为待复核**。标记是本插件状态，库完全不动 |
-| ♻️ **能动手的复核闭环** | 复核队列会把每条标记连同它的窗口与留存原文列出来。两个动作：**复制修正请求**把 id、原文、来源交给模型（模型提议，DSH 的批准是那道门），以及**重抽**——把那个窗口的文本重新交给 MemVault 自己的管线，可以先把文本改对，也可以换抽取器。重抽是面板唯一会写库的动作，而且它走的是 `add()`，不绕过去 |
+| ♻️ **能动手的复核闭环** | 复核队列会把每条标记连同它的窗口与留存原文列出来，并且可以**就地取消标记**。两个动作：**复制修正请求**把 id、原文、来源交给模型（模型提议，DSH 的批准是那道门），以及**重抽**——把那个窗口的文本重新交给 MemVault 自己的管线，可以先把文本改对，也可以换抽取器。重抽是面板唯一会写库的动作，而且它走的是 `add()`，不绕过去 |
 | 🖥️ **host 半边不需要浏览器** | 面板是可选的：`webServer` 用 `ctx.inject` 取，所以无头组合照样注入记忆，只是永远不会注册那两条路由 |
 | 🛟 **设计上软失败** | 库读不了就继续供上一次的好文本并只告警一次；抽取失败绝不让一轮对话失败，也不会污染下一轮 |
 | 🔍 **可在进程外观测** | 水位与最近 5 次抽取诊断原子写入一个 JSON 文件，于是「钩子没触发」「回合太短」「跑了但没抽到」三者可区分 |
