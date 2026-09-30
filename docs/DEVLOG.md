@@ -425,6 +425,14 @@ bug：不报错、不抛异常，只是数据慢慢变少。
 
 顺带确认了两件在截图里看得到的正常行为：详情的「历史 + 关系」把 ADD 审计与两条矛盾关系（权重 0.576 / 0.627）都列了出来；核心块三个（human / rules / persona）都带编辑、删除与新增入口。
 
+### 收录投稿与截图声明（2026-09-30）
+
+- **投稿形态**：awesome-dsh-plugin 的收录是「一个插件一个 YAML 文件」——`data/plugins/<owner>__<repo>.yml`，两个 README 由脚本从这些数据生成，所以 PR 只加**一个文件**（我这次 diff 恰好 6 行）。已提 PR **#6254**，category `memory`；CI 两项（Submission gate / check）均 success。
+- **门槛与本仓库现状**：① 仓库需在 `package.json` 声明 `dsh.bundle`——我们有 `bundle.patch: ./cordis.patch.yml`，而**只声明 `dsh.client` 会被 CI 直接拒**（这是他们最常见的拒稿原因）；② 需 `dsh-plugin` topic（已有）；③ 仓库需创建满 1 天（本仓库 09-28 12:12Z 创建，09-30 提交时约 50.7 小时）。
+- **描述必须属实**：他们的评审会逐句对着代码核，夸大是主要打回原因。所以 PR 正文里附了一张**「声明 → 代码位置」对照表**：注入 = `ctx.systemPrompt.context()`、写 = `memvault.cli add --stdin`、面板 = 七个 exact 路由。
+- **截图声明在**自己**仓库**：新增 `screenshots.json` + `docs/screenshots/` 四张真实面板图（浏览 / 详情 / 复核 / 核心块）。理由他们也写了：写死在列表仓库的绝对 URL 会静默烂掉——已发布的 773 张里 41 张是 404。
+- **顺带确认的一件事**：MemVault 本体（Python 服务）**不能单独收录**——它不是 DSH 插件、没有也不该有 `dsh.bundle`。所以「通用 MCP 服务 + DSH 专属插件」这个分层不只是文档写法，它直接决定了谁是那个能被收录的条目。
+
 ---
 
 ## 15. 附：怎么读 DSH 自己的源码（踩坑 12 的解法）
