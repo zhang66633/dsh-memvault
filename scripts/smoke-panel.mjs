@@ -62,6 +62,8 @@ import {
   validateReplay,
 } from '../lib/review.js'
 import { PRODUCED_TEXT_CLAMP, shapeProduced } from '../lib/extract.js'
+import { countRetyped } from '../lib/memories.js'
+import { runCli } from '../lib/cli.js'
 import {
   BLOCK_LABEL_MAX,
   BLOCK_VALUE_MAX,
@@ -73,6 +75,14 @@ import {
 import { loadState, saveWatermarks } from '../lib/extract.js'
 import { DEFAULT_EXTRACT, apply as applyHost, name as hostName } from '../lib/index.js'
 import { wrapClientBundle } from './build-client.mjs'
+
+/**
+ * The 2026-09-30 false positive, verbatim from the row it retyped
+ * (`mem_005f720b6f15`): a real collaboration convention that mentions plugins and
+ * PRs, which the whole-string version of the classifier mistook for technique
+ * know-how. It must stay a `user` fact on both sides of the boundary.
+ */
+const STILL_USER_CONVENTION = '协作约定（2026-09-29 明确）：第三方插件/开源依赖的「版本适配」问题，报告人只提供问题与证据（issue + 可复现步骤 + 实测数据），**不要代开发者发 PR**——用户会主动关闭这类 PR。因此为修 omdsh-dev/dsh-genui#227 与 duhu2000/dsh-mcp-connector#101 提交的 #229、#102 两个 PR 均被他关闭。'
 
 const failures = []
 function check(label, ok, detail = '') {
@@ -913,6 +923,66 @@ try {
         { id: 'b', memory: 'ok' },
       ]).length === 2)
 
+    // ── the store's type refinement, surfaced for a human (A + D, 2026-09-30) ──
+    // Written through the real CLI so the whole chain is exercised: the engine's
+    // classifier retypes a technique-shaped fact, the row carries
+    // metadata.retyped_from, and the panel can list exactly those rows + the count
+    // — which is what turns a silent heuristic verdict into a decidable item.
+    const technique = '用户熟悉 Electron 应用的 asar 文件格式结构，能够通过解析 JSON 头、计算 4 字节对齐的数据区偏移量来直接读取 app.asar 内部的源码文件。'
+    const cliWrite = await runCli({
+      config: {
+        pythonPath: DEFAULT_EXTRACT.pythonPath,
+        projectDir: DEFAULT_EXTRACT.projectDir,
+        timeoutMs: 120000,
+        env: { ...DEFAULT_EXTRACT.env, MEMVAULT_DB_PATH: windowDb, MEMVAULT_EMBEDDER: 'local', MEMVAULT_EXTRACTOR: 'rule' },
+      },
+      args: ['add', '--stdin', '--no-infer', '--type', 'user', '--user', 'lenovo', '--agent', 'claude-code-memory'],
+      stdin: JSON.stringify([{ role: 'user', content: technique }]),
+    })
+    check('the CLI stores a technique-shaped fact (used by the retype checks)',
+      typeof cliWrite === 'object' && cliWrite.ok === true, JSON.stringify(cliWrite).slice(0, 160))
+
+    const retypedRow = new DatabaseSync(windowDb, { readOnly: true })
+      .prepare(`SELECT id, memory_type, metadata FROM memories WHERE metadata LIKE '%"retyped_from"%'`).get()
+    check('the settled row is typed procedural and carries retyped_from',
+      retypedRow !== undefined && retypedRow.memory_type === 'procedural'
+      && JSON.parse(retypedRow.metadata).retyped_from === 'user',
+      JSON.stringify(retypedRow))
+
+    const retypedPage = readMemories({ dbPath: windowDb, query: { retyped: '1', limit: 20 } })
+    check('?retyped=1 returns exactly the retyped rows',
+      retypedPage.total === 1 && retypedPage.rows[0]?.id === retypedRow.id
+      && retypedPage.applied.retyped === true,
+      `total=${retypedPage.total} applied=${JSON.stringify(retypedPage.applied)}`)
+    check('a browse without the filter is unaffected',
+      readMemories({ dbPath: windowDb, query: { limit: 50 } }).applied.retyped === false)
+    const retypedCount = countRetyped({ dbPath: windowDb })
+    check('the retyped count is available for the badge', retypedCount === 1, `count=${retypedCount}`)
+    const payloadWithCount = (await hit(MEMORIES_PATH, { url: `${MEMORIES_PATH}?limit=1` })).body
+    check('the browse payload carries retypedCount',
+      payloadWithCount.retypedCount === 1 && payloadWithCount.flaggedCount >= 0,
+      `retypedCount=${payloadWithCount.retypedCount}`)
+
+    // The narrowed classifier (A) must not fire on a convention that merely
+    // mentions technical words — verified end to end through the same CLI.
+    const convention = STILL_USER_CONVENTION
+    await runCli({
+      config: {
+        pythonPath: DEFAULT_EXTRACT.pythonPath,
+        projectDir: DEFAULT_EXTRACT.projectDir,
+        timeoutMs: 120000,
+        env: { ...DEFAULT_EXTRACT.env, MEMVAULT_DB_PATH: windowDb, MEMVAULT_EMBEDDER: 'local', MEMVAULT_EXTRACTOR: 'rule' },
+      },
+      args: ['add', '--stdin', '--no-infer', '--type', 'user', '--user', 'lenovo', '--agent', 'claude-code-memory'],
+      stdin: JSON.stringify([{ role: 'user', content: convention }]),
+    })
+    const conventionRow = new DatabaseSync(windowDb, { readOnly: true })
+      .prepare('SELECT memory_type, metadata FROM memories WHERE memory = ?').get(convention)
+    check('the 09-30 false positive stays a user fact on this side too',
+      conventionRow !== undefined && conventionRow.memory_type === 'user' && conventionRow.metadata === '{}',
+      JSON.stringify(conventionRow))
+    check('still exactly one retyped row after the convention write', countRetyped({ dbPath: windowDb }) === 1)
+
     // ── the review queue, and a real replay ─────────────────────────────────
     const stateNow = loadState(windowState)
     check('the state file retains what the window sent',
@@ -959,6 +1029,12 @@ try {
       })).code === 403)
 
     // The real thing: the retained input, sent through MemVault's own pipeline.
+    // Row count immediately before the replay, so the no-duplication assertion
+    // below is independent of however many rows other checks have written.
+    const storeBeforeReplay = new DatabaseSync(windowDb, { readOnly: true })
+    const rowsBeforeReplay = storeBeforeReplay.prepare('SELECT COUNT(*) AS n FROM memories').get().n
+    storeBeforeReplay.close()
+
     const replay = await hit(REPLAY_PATH, { method: 'POST', body: { key: inputKey, extractor: 'rule' } })
     check('a replay is accepted and queued',
       replay.code === 202 && replay.body.ok === true && replay.body.key === inputKey
@@ -984,11 +1060,14 @@ try {
 
     // ① A in practice: the same text re-sent goes through MemVault's own decision,
     // which recognises it as the same facts and updates in place — no duplicates.
+    // Counted as "unchanged across the replay" rather than "equals the produced
+    // count": the store also holds the rows written by the retype checks above, and
+    // an assertion about this replay must not depend on them.
     const originalIds = withProduced[0].produced.map((p) => p.id).sort()
     const replayIds = (replayDiag?.produced ?? []).map((p) => p.id).sort()
     check('replaying the same text updates the same rows instead of duplicating them',
-      replayIds.join(',') === originalIds.join(',') && rowsAfter === originalIds.length,
-      `original=${originalIds.join(',')} replay=${replayIds.join(',')} rows=${rowsAfter}`)
+      replayIds.join(',') === originalIds.join(',') && rowsAfter === rowsBeforeReplay,
+      `original=${originalIds.join(',')} replay=${replayIds.join(',')} rows ${rowsBeforeReplay} -> ${rowsAfter}`)
 
     // A read-only panel cannot replay: it writes the store.
     const noReplayChildren = []
