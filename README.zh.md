@@ -21,7 +21,9 @@
 
 ---
 
-**dsh-memvault** 补齐的是一个**已经存在**的记忆系统缺掉的那一半。**MemVault**（本机长期记忆服务：SQLite 库 + FastAPI/CLI 管线 + stdio MCP server）负责存事实、做向量化、做检索——但它是 **stdio MCP server**，而 MCP 是 *pull* 协议：服务端只能被**调用**，它没有任何渠道往模型上下文里放东西。所以「记忆已经在上下文里了」这件事，**在 MCP 这一层永远做不到**，只能由客户端插件来做。
+**dsh-memvault** 补齐的是一个**已经存在**的记忆系统缺掉的那一半。**[MemVault](https://github.com/zhang66633/memvault)**（本机长期记忆服务：SQLite 库 + FastAPI/CLI 管线 + stdio MCP server）负责存事实、做向量化、做检索——但它是 **stdio MCP server**，而 MCP 是 *pull* 协议：服务端只能被**调用**，它没有任何渠道往模型上下文里放东西。所以「记忆已经在上下文里了」这件事，**在 MCP 这一层永远做不到**，只能由客户端插件来做。
+
+两半是刻意分开的：**MemVault 单独就是一个通用 MCP 服务**，任何客户端都能用（Claude Code、Cursor、Cline、脚本）；**本插件是 DSH 专属的那一层**——提示词注入、按窗口把结束的轮次交给 MemVault 自己的管线、以及面板。装上插件，「记忆已经在上下文里」才成立，而不是靠模型记得去查。
 
 本插件做三件事：
 

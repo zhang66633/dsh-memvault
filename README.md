@@ -21,7 +21,9 @@
 
 ---
 
-**dsh-memvault** is the missing half of a memory system that already exists. **MemVault** (a local long-term-memory service: a SQLite store, a FastAPI/CLI pipeline and a stdio MCP server) stores facts, embeds them and retrieves them — but it is a **stdio MCP server**, and MCP is a *pull* protocol: the server can only be *called*, it has no channel to put anything into the model's context. So "memory is already loaded" can never be achieved from the MCP side. It has to be done by the client, which is this plugin.
+**dsh-memvault** is the missing half of a memory system that already exists. **[MemVault](https://github.com/zhang66633/memvault)** (a local long-term-memory service: a SQLite store, a FastAPI/CLI pipeline and a stdio MCP server) stores facts, embeds them and retrieves them — but it is a **stdio MCP server**, and MCP is a *pull* protocol: the server can only be *called*, it has no channel to put anything into the model's context. So "memory is already loaded" can never be achieved from the MCP side. It has to be done by the client, which is this plugin.
+
+The two halves are deliberately separable: **MemVault alone is a general MCP service** any client can use (Claude Code, Cursor, Cline, a script), and **this plugin is the DSH-specific layer** — prompt injection, windowed turn extraction through MemVault's own pipeline, and the panel. Installing the plugin is what makes memory *already there* instead of something the model has to remember to look up.
 
 The plugin does three things:
 
