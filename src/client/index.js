@@ -463,7 +463,12 @@ function RelationGraph({ graph, selectedId, onPick }) {
   // anything, drawing the isolated ones too produced a dense black ring where the
   // relations were the last thing you could see. The isolated count is reported in
   // the totals card instead — a number, not 300 identical dots.
-  const nodes = (graph?.nodes ?? []).filter((node) => (node.degree ?? 0) > 0)
+  const MAX_DRAWN_EDGES = 40
+  const edges = [...(graph?.edges ?? [])]
+    .sort((a, b) => (Number(b.weight) || 0) - (Number(a.weight) || 0))
+    .slice(0, MAX_DRAWN_EDGES)
+  const involved = new Set(edges.flatMap((edge) => [edge.source, edge.target]))
+  const nodes = (graph?.nodes ?? []).filter((node) => involved.has(node.id))
   if (nodes.length === 0) {
     return h('div', { style: S.empty },
       (graph?.isolated ?? 0) > 0
@@ -477,7 +482,7 @@ function RelationGraph({ graph, selectedId, onPick }) {
     return [node.id, [size / 2 + radius * Math.cos(angle), size / 2 + radius * Math.sin(angle)]]
   }))
   return h('svg', { viewBox: `0 0 ${size} ${size}`, style: { width: '100%', maxWidth: `${size}px`, display: 'block', margin: '0 auto' } },
-    (graph.edges ?? []).filter((edge) => place.has(edge.source) && place.has(edge.target)).map((edge, index) => {
+    edges.filter((edge) => place.has(edge.source) && place.has(edge.target)).map((edge, index) => {
       const from = place.get(edge.source)
       const to = place.get(edge.target)
       const weight = Number(edge.weight) || 0
@@ -598,6 +603,8 @@ function StructureView({ onError }) {
 
     h(Card, { title: `关系图（${graph.nodes.length} 个节点 / ${graph.edges.length} 条边）` },
       h(RelationGraph, { graph, selectedId: selected?.id, onPick: setSelected }),
+      (graph.totalEdges ?? 0) > 0 && (data.graph?.edges?.length ?? 0) >= 40 && h('div', { style: { ...S.hint, marginTop: '6px' } },
+        `只画了最重的 40 条边（库中共 ${graph.totalEdges} 条）；节点也只用这些边的两端，否则 120 个点会连成一个看不出关系的圆环。`),
       h('div', { style: { ...S.hint, marginTop: '8px' } },
         '节点=记忆，连线=矛盾关系，线宽与不透明度随权重；节点大小随度数。点一个节点看它本身，详情里能看到完整的 ADD/UPDATE/DELETE 审计链。'),
     ),
@@ -1020,7 +1027,7 @@ function MemoryPanel() {
           }),
         ),
         h('div', { style: { ...S.hint, marginTop: '8px' } },
-          '这些值只有两个改动入口：DSH 插件配置（read.dbPath / read.scopes / extract.user / extract.agent / extract.projectDir …）或 MemVault 的 .env（MEMVAULT_DB_PATH / MEMVAULT_DEFAULT_* / MEMVAULT_SCOPE_*）。面板只显示不改——两处都能改的话，最难查的就是"到底是哪个在生效"。记忆条数与结构见「结构」页。'),
+          '改路径只有两个真实的入口，而且都不是表单：① 宿主侧——profile 的 cordis.patch.yml（设置 →「打开配置文件」），写成 - id: memvault-core-context 加 config: 覆盖；DSH 当前**没有**给已安装插件提供配置页，这是核实过的。② 服务端侧——MemVault 的 .env（MEMVAULT_DB_PATH / MEMVAULT_DEFAULT_* / MEMVAULT_SCOPE_*）。面板只显示不改：改写同一份配置源才不会出现"哪个在生效"。记忆条数与结构见「结构」页。'),
         // Path validation: "can be set" and "was set correctly" are two different
         // things, and only the second one is worth anything at setup time.
         (data?.paths?.length > 0) && h('div', { style: { marginTop: '10px' } },

@@ -1,6 +1,6 @@
 {
   "name": "dsh-memvault",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "DeepSeek Harness plugin: inject MemVault core memory blocks into the system prompt, extract finished turns as one windowed pass, and show, edit, trace, review and replay all of it in a memory panel",
   "type": "module",
   "main": "lib/index.js",
