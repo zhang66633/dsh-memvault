@@ -1,7 +1,9 @@
 [
   "docs/screenshots/panel-inject.jpg",
-  "docs/screenshots/panel-browse.png",
   "docs/screenshots/panel-detail.png",
   "docs/screenshots/panel-review.png",
-  "docs/screenshots/panel-core-blocks.jpg"
+  "docs/screenshots/panel-core-blocks.jpg",
+  "docs/screenshots/panel-browse-filters.jpg",
+  "docs/screenshots/panel-structure-graph.jpg",
+  "docs/screenshots/panel-structure-dimensions.jpg"
 ]
