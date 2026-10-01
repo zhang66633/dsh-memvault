@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "memvault": {
+      "type": "stdio",
+      "command": "D:/Claude_code/memory/.venv/Scripts/python.exe",
+      "args": ["-m", "memvault.mcp_server"],
+      "cwd": "D:/Claude_code/memory",
+      "env": {
+        "MEMVAULT_DB_PATH": "D:/Claude_code/memory/data/memvault.db"
+      }
+    }
+  }
+}

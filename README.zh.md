@@ -319,6 +319,9 @@ npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动�
 **外部 MCP 服务器无法往提示词里注入任何东西**，而这个插件也无法服务其它客户端。
 
 连接器支持导入 `mcpServers` 块，所以整件事就是粘贴一次（DSH → 🧩 MCP 连接器 → 添加 → 粘贴，
+
+同一份内容也放在仓库里：[`docs/mcp/memvault.mcp.json`](docs/mcp/memvault.mcp.json)，可直接导入。
+
 或用 `mcp_connector_import_json` 工具）：
 
 ```json

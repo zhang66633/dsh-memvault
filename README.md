@@ -383,6 +383,9 @@ connection — not because of packaging, but because an external MCP server cann
 anything into the prompt, and this plugin cannot serve other clients.
 
 The MCP connector imports an `mcpServers` block, so the whole setup is one paste
+
+The same block lives in this repository as [`docs/mcp/memvault.mcp.json`](docs/mcp/memvault.mcp.json), ready to import.
+
 (DSH → 🧩 MCP 连接器 → add → paste, or the `mcp_connector_import_json` tool):
 
 ```json

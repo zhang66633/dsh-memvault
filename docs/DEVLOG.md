@@ -591,3 +591,26 @@ MemVault 项目目录里能找到 `memvault/` 包、库文件存在**或其父�
 - 每个叶子节点带 `offset`（相对数据区）与 `size`。
 
 本轮读到的关键文件：`dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`（profile/bundle 加载、peer 兼容判定）、`dsh-package-manifest/README.md`（manifest 必填字段）、`dsh-system-prompt/README.md`（`ctx.systemPrompt` 与动态上下文的语义）、`dsh-plugin-manager/README.md`（bundle 选择、版本豁免、安装流程）。脚本是一次性工具，不入库。
+
+---
+
+## 20. 为什么没有 ConnectorDescriptor（③B 的结论：不做）
+
+原计划是往仓库里放一个 `dsh-connector.json`，让用户花一条 `mcp_connector_install_from_url`
+就接上 MCP。核过 schema 之后决定不做，理由是格式本身不支持我们的场景：
+
+- `registry/schema/connector.schema.json` 里 server 的 `command` 是**字面字符串**
+  （`minLength: 1`，无占位符机制）；能由用户填的只有 `auth.credentialFields`，而它们经
+  `credentialBindings` 绑定到 **env 变量**，绑定不到 command。
+- 于是描述文件只能：① 写死我这台机器的 `D:/Claude_code/memory/.venv/Scripts/python.exe`（对别人错），
+  或 ② 写 `python`（赌别人系统解释器能 `import memvault`，而 MCP 依赖其实装在 venv 里）。
+  两条都会把「装完就能用」变成「装完报一个看不懂的错」。
+- 连接器自己的文档也是这个口径：目录中的 stdio 条目面向**无密钥、可移植**的服务（npx 那类）；
+  自定义本地 stdio 走手动/JSON 导入那条路。
+
+**所以 ③B 的交付改成**：仓库里放一个可直接导入的 `docs/mcp/memvault.mcp.json`（与 README 里那段
+一致），并在 README 写明"不想装连接器就跳过这一节"。真正稳定的部分是**插件这半边**（注入 + 按轮抽取 +
+面板），MCP 只是可选的一层——这一点已经写进 README，也写在这里。
+
+教训归一句：**能一条 URL 装上的东西的前提是它不含本机特有的值**。MemVault 是本地服务，
+它的本机性无法被描述文件消掉；与其做一个会误导人的一键，不如把一个诚实的粘贴做好。
