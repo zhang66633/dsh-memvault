@@ -178,6 +178,8 @@ npm test          # lib/client.js 过期会直接失败
 
 `@deepseek-ai/schemastery` 由 DSH 运行时提供，本包把它声明为 peer。这个 import 只尝试一次、缺失时容忍，因为随包的 smoke 测试跑在裸 Node 上：没有 DSH 时插件不导出 `Config`、照常加载，并会警告自己没有设置页。在 DSH 里它总能解析成功。
 
+![架构：一个引擎，三个适配器](docs/architecture.svg)
+
 ## 🏗️ 工作原理
 
 ```mermaid

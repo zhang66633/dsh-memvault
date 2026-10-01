@@ -192,6 +192,8 @@ The import is attempted once and tolerated when absent, because the bundled smok
 tests run on plain Node: outside DSH the plugin exports no `Config`, still loads,
 and warns that it has no settings page. In DSH it always resolves.
 
+![Architecture: one engine, three adapters](docs/architecture.svg)
+
 ## 🏗️ How it works
 
 ```mermaid
