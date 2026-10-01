@@ -699,7 +699,10 @@ try {
         projectDir: DEFAULT_EXTRACT.projectDir,
         env: {
           ...DEFAULT_EXTRACT.env,
-          MEMVAULT_DB_PATH: windowDb,
+          // No MEMVAULT_DB_PATH here on purpose: the plugin must hand its own
+          // `read.dbPath` to every child process it spawns (single source). If that
+          // wiring regresses, the CLI below falls back to MemVault's relative
+          // default and this whole window block writes into the wrong store.
           MEMVAULT_EMBEDDER: 'local',
           MEMVAULT_EXTRACTOR: 'rule',
         },
@@ -945,8 +948,10 @@ try {
     check('the CLI stores a technique-shaped fact (used by the retype checks)',
       typeof cliWrite === 'object' && cliWrite.ok === true, JSON.stringify(cliWrite).slice(0, 160))
 
-    const retypedRow = new DatabaseSync(windowDb, { readOnly: true })
+    const retypedHandle = new DatabaseSync(windowDb, { readOnly: true })
+    const retypedRow = retypedHandle
       .prepare(`SELECT id, memory_type, metadata FROM memories WHERE metadata LIKE '%"retyped_from"%'`).get()
+    retypedHandle.close()
     check('the settled row is typed procedural and carries retyped_from',
       retypedRow !== undefined && retypedRow.memory_type === 'procedural'
       && JSON.parse(retypedRow.metadata).retyped_from === 'user',
@@ -979,8 +984,10 @@ try {
       args: ['add', '--stdin', '--no-infer', '--type', 'user', '--user', 'lenovo', '--agent', 'claude-code-memory'],
       stdin: JSON.stringify([{ role: 'user', content: convention }]),
     })
-    const conventionRow = new DatabaseSync(windowDb, { readOnly: true })
+    const conventionHandle = new DatabaseSync(windowDb, { readOnly: true })
+    const conventionRow = conventionHandle
       .prepare('SELECT memory_type, metadata FROM memories WHERE memory = ?').get(convention)
+    conventionHandle.close()
     check('the 09-30 false positive stays a user fact on this side too',
       conventionRow !== undefined && conventionRow.memory_type === 'user' && conventionRow.metadata === '{}',
       JSON.stringify(conventionRow))
@@ -1190,7 +1197,15 @@ try {
       noReplay.code === 403 && /disabled/.test(noReplay.body.error), noReplay.body.error)
   }
 } finally {
-  rmSync(dir, { recursive: true, force: true })
+  // Windows can still hold a handle for a moment after the last CLI child exits
+  // (the store's WAL sidecars especially), and a plain rmSync then fails with
+  // EPERM. Retry briefly: the alternative is a suite that passes its assertions
+  // and still exits non-zero.
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
+  } catch (cleanupError) {
+    console.log(`  [INFO] temp dir left behind (${cleanupError.code}): ${dir}`)
+  }
 }
 
 // ── the shipped browser bundle ───────────────────────────────────────────────
