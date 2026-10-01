@@ -251,6 +251,24 @@ Panel path, on open and every 15 s:
 2. The handler re-reads only when the TTL says so, so a polling panel never becomes a per-second SQLite read; 立即重读 forces the read instead.
 3. The payload reports the blocks **the prompt is getting**, not a second interpretation of the store — same reader, same scope/label filters, same budget.
 
+## 📸 What it looks like
+
+**Injection is the headline.** Every step, the core blocks are assembled into the system
+prompt — no tool call, no round trip, no "did the model remember to look". The panel
+shows the rendered budget, the scopes it read, and the blocks themselves:
+
+![The injection view: 3 blocks, 852 of 4000 characters, scopes user/lenovo and agent/claude-code-memory](docs/screenshots/panel-inject.jpg)
+
+**Memory structure** — scope dimensions, which blocks actually reach the prompt, and the
+relation graph (only the 40 heaviest edges, or 120 nodes become an unreadable ring):
+
+![The structure view: scope dimension counts, block occupancy, and the contradiction graph](docs/screenshots/panel-structure-graph.jpg)
+
+**Browsing** is a substring browse, not retrieval — with review marks and a flag on rows
+the store retyped on its own:
+
+![The browse view with type filters, review marks and a retyped-row flag](docs/screenshots/panel-browse-filters.jpg)
+
 ## 🧪 Verification
 
 No DSH and no browser needed:
