@@ -1084,6 +1084,12 @@ try {
       (await hit(STATUS_PATH)).body.db?.exists === true
       && (await hit(STATUS_PATH)).body.db.bytes > 0,
       JSON.stringify((await hit(STATUS_PATH)).body.db))
+    const disco = (await hit(STATUS_PATH)).body.discovery
+    check('status reports how the paths were decided (source + what was searched)',
+      disco !== undefined && ['env', 'discovered', 'none'].includes(disco.source)
+      && Array.isArray(disco.candidates),
+      JSON.stringify({ source: disco?.source, candidates: disco?.candidates?.length }))
+
     check('a path with no file behind it reports exists:false rather than throwing',
       dbFileInfo(join(dir, 'definitely-not-here.db')).exists === false
       && dbFileInfo(join(dir, 'definitely-not-here.db')).bytes === 0)
