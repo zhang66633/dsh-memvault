@@ -375,6 +375,40 @@ file.
 - **`node:sqlite` is experimental** in the Node versions DSH currently ships.
 - **Machine-specific defaults.** `scopes` defaults to the author's `(user, lenovo)` / `(agent, claude-code-memory)` pairs, and the shipped patch points at the author's checkout. Both are meant to be edited.
 
+## 🔌 Adding the MCP server (one paste)
+
+Injection, extraction and the panel need **nothing** extra: install the bundle and they
+work. Model-invoked recall (`memory_search`, relations, consolidate …) is a separate MCP
+connection — not because of packaging, but because an external MCP server cannot inject
+anything into the prompt, and this plugin cannot serve other clients.
+
+The MCP connector imports an `mcpServers` block, so the whole setup is one paste
+(DSH → 🧩 MCP 连接器 → add → paste, or the `mcp_connector_import_json` tool):
+
+```json
+{
+  "mcpServers": {
+    "memvault": {
+      "type": "stdio",
+      "command": "D:/Claude_code/memory/.venv/Scripts/python.exe",
+      "args": ["-m", "memvault.mcp_server"],
+      "cwd": "D:/Claude_code/memory",
+      "env": { "MEMVAULT_DB_PATH": "D:/Claude_code/memory/data/memvault.db" }
+    }
+  }
+}
+```
+
+- **Keep the store path the same** as the plugin's `dbPath`. The plugin passes
+  `MEMVAULT_DB_PATH` to every child process it spawns, so stating it here too makes both
+  halves provably share one file instead of relying on two defaults agreeing.
+- **Adjust `command` / `cwd`** to your checkout (and on Linux/macOS use
+  `.venv/bin/python`).
+- **Already running a `memvault` server?** Replace it rather than adding a second one:
+  two connections with the same `serverName` collide on tool names.
+- **Skipping the connector entirely?** Then skip this section — injection, extraction and
+  the panel are unaffected; only on-demand search over the long tail is missing.
+
 ## 🗺️ Roadmap
 
 - **Let the model consume the review request directly** — today it is copied and pasted; a tool that hands the queue over (still behind DSH's approval) would close the loop on the model's side.

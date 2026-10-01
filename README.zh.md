@@ -312,6 +312,36 @@ npm run smoke:panel   # 在 stub 上下文上挂载插件、用临时库驱动�
 - **`node:sqlite` 仍是 experimental**（DSH 当前自带的 Node 版本就是如此）。
 - **默认值带本机信息。** `scopes` 默认是作者的 `(user, lenovo)` / `(agent, claude-code-memory)`，随包附带的 patch 指向作者的 checkout。两处都是给你改的。
 
+## 🔌 接入 MCP 服务器（粘贴一次）
+
+注入、按轮抽取与面板**不需要**额外配置：装完 bundle 就能用。模型主动检索
+（`memory_search`、关系、合并……）才需要单独一条 MCP 连接——不是因为打包方式，而是因为
+**外部 MCP 服务器无法往提示词里注入任何东西**，而这个插件也无法服务其它客户端。
+
+连接器支持导入 `mcpServers` 块，所以整件事就是粘贴一次（DSH → 🧩 MCP 连接器 → 添加 → 粘贴，
+或用 `mcp_connector_import_json` 工具）：
+
+```json
+{
+  "mcpServers": {
+    "memvault": {
+      "type": "stdio",
+      "command": "D:/Claude_code/memory/.venv/Scripts/python.exe",
+      "args": ["-m", "memvault.mcp_server"],
+      "cwd": "D:/Claude_code/memory",
+      "env": { "MEMVAULT_DB_PATH": "D:/Claude_code/memory/data/memvault.db" }
+    }
+  }
+}
+```
+
+- **库路径要与插件的 `dbPath` 一致**。插件会把它自己的库路径通过 `MEMVAULT_DB_PATH`
+  传给每个子进程，所以这里也写明，两半就是**可证明地共用同一个文件**，而不是靠两个默认值恰好相等。
+- **按你自己的位置改** `command` / `cwd`（Linux/macOS 用 `.venv/bin/python`）。
+- **已经有同名 `memvault` 连接？** 替换它而不是再加一条：两条连接若 `serverName` 相同，
+  工具名会冲突。
+- **干脆不装连接器？** 那就跳过这一节——注入、抽取与面板不受影响，少的只是对长尾记忆的按需检索。
+
 ## 🗺️ 路线图
 
 - **让模型直接消费那份复核请求** —— 现在是复制粘贴；做一个把队列交出去的工具（仍然在 DSH 批准之后）就能在模型侧闭环。
