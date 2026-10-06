@@ -30,8 +30,9 @@
     "smoke:config": "node scripts/smoke-config.mjs",
     "smoke:extract": "node scripts/smoke-extract.mjs",
     "smoke:panel": "node scripts/smoke-panel.mjs",
+  "smoke:panel-routes": "node scripts/smoke-panel-routes.mjs",
     "smoke:package": "node scripts/smoke-package.mjs",
-    "test": "node scripts/smoke-package.mjs && node scripts/smoke-config.mjs && node scripts/smoke.mjs && node scripts/smoke-extract.mjs && node scripts/smoke-panel.mjs"
+    "test": "node scripts/smoke-package.mjs && node scripts/smoke-config.mjs && node scripts/smoke.mjs && node scripts/smoke-extract.mjs && node scripts/smoke-panel.mjs && node scripts/smoke-panel-routes.mjs"
   },
   "repository": {
     "type": "git",
