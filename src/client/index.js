@@ -30,6 +30,7 @@ const FLUSH_URL = '/memvault/api/flush'
 const MEMORIES_URL = '/memvault/api/memories'
 const MEMORY_URL = '/memvault/api/memory'
 const FLAG_URL = '/memvault/api/flag'
+const REINDEX_URL = '/memvault/api/reindex'
 const REVIEW_URL = '/memvault/api/review'
 const REPLAY_URL = '/memvault/api/replay'
 const POLL_MS = 15000
@@ -1073,7 +1074,32 @@ function MemoryPanel() {
         h('div', { style: S.grid },
           h(KV, { k: '状态', v: extract?.enabled === false ? '已关闭（只读）' : '开启' }),
           h(KV, { k: '窗口策略', v: extract?.window ? `≥${extract.window.everyNTurns} 轮起，静默 ${Math.round((extract.window.idleMs ?? 0) / 1000)} s 或满 ${extract.window.windowTurns} 轮就抽取` : '—' }),
-          h(KV, { k: '窗口丢弃', v: (() => {
+          h(KV, { k: '嵌入器重算', v: h('button', {
+        type: 'button',
+        onClick: async () => {
+          // Dry run first, always: the report is the point, and it costs one call at most.
+          const res = await fetch(REINDEX_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+          const data = await res.json().catch(() => null)
+          const r = data?.report
+          window.alert(r
+            ? `共 ${r.total} 行 · 需重算 ${r.to_recompute} · 未记录 ${r.unrecorded} · 目标 ${r.target}`
+            : `无法取得报告：${data?.error ?? res.status}`)
+        },
+      }, '检查（dry-run）') }),
+      h(KV, { k: '按上面的数字执行', v: h('button', {
+        type: 'button',
+        onClick: async () => {
+          // The cost is stated before it is paid: one embedding call per row that changes.
+          if (!window.confirm('重算会为每一行需要更新的记忆调用一次嵌入模型（记忆原文会离开本机）。先点“检查（dry-run）”看数量。继续执行？')) return
+          const res = await fetch(REINDEX_URL, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apply: true }) })
+          const data = await res.json().catch(() => null)
+          const r = data?.report
+          window.alert(r
+            ? `已重算 ${r.recomputed ?? 0} 行 · 已记录 ${r.recorded ?? 0} 行`
+            : `失败：${data?.error ?? res.status}`)
+        },
+      }, '执行重算') }),
+      h(KV, { k: '窗口丢弃', v: (() => {
         const d = extract?.window?.pendingDropped
         if (!d) return '未知'
         const caps = `上限 ${d.maxPendingSessions} 个 / ${Math.round(d.maxPendingAgeMs / 60000)} 分钟`

@@ -130,6 +130,22 @@ check('the built bundle offers un-flagging from the review queue',
   clientBundle.includes('取消标记') && existsSync(join(root, pkg.exports['./client'])))
 check('the built bundle carries the structure view',
   clientBundle.includes('/memvault/api/structure') && clientBundle.includes('关系图'))
+{
+  const { runReindex } = await import('../lib/reindex.js')
+  const { MEMVAULT_DIR: vaultDir, MEMVAULT_PYTHON: vaultPython } = await import('../lib/index.js')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-mv-reindex-'))
+  const env = { ...process.env, MEMVAULT_DB_PATH: join(dir, 'r.db'), MEMVAULT_EMBEDDER: 'local', MEMVAULT_EMBEDDING_DIM: '384' }
+  const dry = runReindex({ pythonPath: vaultPython, projectDir: vaultDir, env })
+  check('the reindex runner reports without writing',
+    dry.ok && dry.report && dry.report.dryRun === true && typeof dry.report.total === 'number',
+    dry.ok ? ('total ' + dry.report.total) : String(dry.error))
+  check('the reindex runner fails loudly on a project it cannot run',
+    runReindex({ pythonPath: vaultPython, projectDir: join(dir, 'nope'), env }).ok === false)
+}
+
+check('the built bundle carries the reindex entry',
+  clientBundle.includes('嵌入器重算') && clientBundle.includes('执行重算') && clientBundle.includes('/memvault/api/reindex'))
+
 check('the built bundle reports what the window dropped',
   clientBundle.includes('窗口丢弃') && clientBundle.includes('超上限'))
 
