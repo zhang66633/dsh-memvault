@@ -132,5 +132,36 @@ check('the built bundle carries the structure view',
 check('the built bundle states where the paths can be changed',
   clientBundle.includes('位置与初始化') && clientBundle.includes('改路径只有两个真实的入口'))
 
+// ── absolute paths only where they are allowed to be ─────────────────────────
+// A hard-coded disk is how "works on my machine" starts. Four files may contain one,
+// each for a stated reason; anything else fails here rather than on someone else's
+// machine:
+//   lib/config.js      the discovery *candidates* (searched, never assumed)
+//   lib/blocks.js      the documented fallback for a direct readCoreBlocks call
+//   lib/index.js       a comment about Windows path normalisation
+//   cordis.patch.yml   the shipped example configuration, annotated as such
+//
+// The pattern requires a non-alphanumeric (or the start) before the letter: the first
+// version matched `http://` and flagged three harmless URL constructions in panel.js.
+const DRIVE_PATH = /(^|[^A-Za-z0-9])[A-Za-z]:[\\/]/
+check('the path guard does not mistake a URL scheme for a drive letter',
+  !DRIVE_PATH.test('http://localhost') && !DRIVE_PATH.test('https://example.com/x')
+  && DRIVE_PATH.test('D:/x') && DRIVE_PATH.test("'C:\\Users\\x'"))
+
+const ALLOWED_ABSOLUTE_PATH_FILES = ['lib/config.js', 'lib/blocks.js', 'lib/index.js', 'cordis.patch.yml']
+const SOURCE_FILES = [
+  'lib/config.js', 'lib/blocks.js', 'lib/index.js', 'lib/panel.js', 'lib/memories.js',
+  'lib/structure.js', 'lib/extract.js', 'lib/window.js', 'lib/cli.js', 'lib/flags.js',
+  'src/client/index.js', 'cordis.patch.yml',
+]
+const offenders = SOURCE_FILES.filter((rel) => !ALLOWED_ABSOLUTE_PATH_FILES.includes(rel)
+  && DRIVE_PATH.test(readFileSync(join(root, rel), 'utf8')))
+check('an absolute path appears only in the files allowed to carry one',
+  offenders.length === 0,
+  offenders.length > 0 ? `new hard-coded path(s) in: ${offenders.join(', ')}` : 'allow-list intact')
+check('every allow-listed file still contains one (a stale entry would be a lie)',
+  ALLOWED_ABSOLUTE_PATH_FILES.every((rel) => DRIVE_PATH.test(readFileSync(join(root, rel), 'utf8'))),
+  ALLOWED_ABSOLUTE_PATH_FILES.join(', '))
+
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `FAILED: ${failures.join(', ')}`}`)
 process.exit(failures.length === 0 ? 0 : 1)
