@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/overview.png" alt="dsh-memvault 项目介绍" width="100%"></p>
+
 # dsh-memvault
 
 <p align="center">
