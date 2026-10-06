@@ -106,9 +106,16 @@ const outcomeTone = (outcome) => (String(outcome ?? '').startsWith('ok') ? C.ok
   : String(outcome ?? '').startsWith('skipped') ? C.idle : C.err)
 
 function KV({ k, v, mono = true }) {
+  // `v` is usually text, but it may be a node - the reindex entry puts buttons here. Every
+  // value used to go through String(), so a node rendered as "[object Object]": the buttons
+  // shipped as two lines of literal text and there was nothing to click. Primitives keep the
+  // old path (including "—" for empty), anything else is rendered as it is.
+  const isEmpty = v === null || v === undefined || v === ''
+  const isText = typeof v === 'string' || typeof v === 'number'
   return h('div', { style: S.kv },
     h('span', { style: S.k }, k),
-    h('span', { style: mono ? S.v : undefined, title: typeof v === 'string' ? v : undefined }, v === null || v === undefined || v === '' ? '—' : String(v)),
+    h('span', { style: mono ? S.v : undefined, title: typeof v === 'string' ? v : undefined },
+      isEmpty ? '—' : (isText ? String(v) : v)),
   )
 }
 
