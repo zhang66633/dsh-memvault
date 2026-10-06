@@ -130,6 +130,9 @@ check('the built bundle offers un-flagging from the review queue',
   clientBundle.includes('取消标记') && existsSync(join(root, pkg.exports['./client'])))
 check('the built bundle carries the structure view',
   clientBundle.includes('/memvault/api/structure') && clientBundle.includes('关系图'))
+check('the built bundle reports what the window dropped',
+  clientBundle.includes('窗口丢弃') && clientBundle.includes('超上限'))
+
 check('the built bundle states where the paths can be changed',
   clientBundle.includes('位置与初始化') && clientBundle.includes('改路径只有两个真实的入口'))
 

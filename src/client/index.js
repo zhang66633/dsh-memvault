@@ -1073,7 +1073,17 @@ function MemoryPanel() {
         h('div', { style: S.grid },
           h(KV, { k: '状态', v: extract?.enabled === false ? '已关闭（只读）' : '开启' }),
           h(KV, { k: '窗口策略', v: extract?.window ? `≥${extract.window.everyNTurns} 轮起，静默 ${Math.round((extract.window.idleMs ?? 0) / 1000)} s 或满 ${extract.window.windowTurns} 轮就抽取` : '—' }),
-          h(KV, { k: '待抽取', v: extract?.window?.pending?.length
+          h(KV, { k: '窗口丢弃', v: (() => {
+        const d = extract?.window?.pendingDropped
+        if (!d) return '未知'
+        const caps = `上限 ${d.maxPendingSessions} 个 / ${Math.round(d.maxPendingAgeMs / 60000)} 分钟`
+        // A cap that silently eats sessions is worse than no cap: say what was dropped, and
+        // what the limits were when it happened.
+        return (d.overCap || d.expired)
+          ? `超上限 ${d.overCap} · 过期 ${d.expired}（${caps}）`
+          : `无（${caps}）`
+      })() }),
+      h(KV, { k: '待抽取', v: extract?.window?.pending?.length
             ? extract.window.pending.map((p) => `${String(p.sessionId).slice(-8)} · ${p.turns} 轮`).join('   ')
             : '空' }),
           h(KV, { k: '接受的结束原因', v: extract?.endReasons?.join(' / ') }),
