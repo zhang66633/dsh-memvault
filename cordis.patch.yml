@@ -13,6 +13,12 @@
 # 下面每一个字段都在 `lib/config.js` 里只描述一次：代码默认值、DSH 用来校验的
 # `Config` schema、Plugins 页的设置项都由那一份 spec 产出。写错键名或类型时，
 # 插件会照常跑（用默认值）并把问题显示在面板上。
+#
+# ⚠️ 本文件里的路径（dbPath / pythonPath / projectDir）是**作者本机的布局示例**，不是通用
+# 默认值。装到别的机器上有两条路：① 什么都不改——插件会**自动发现** MemVault（先看
+# `MEMVAULT_DIR` / `MEMVAULT_PYTHON`，再看若干常见位置，都没找到就在面板上如实报告
+# “未找到”并列出试过哪些目录）；② 或者把下面这几个值改成你自己的路径。
+# 面板的「位置与初始化」会显示当前生效的值、它是怎么定下来的，以及逐项自检结果。
 - insert:
     - id: memvault-core-context
       name: 'dsh-memvault'
