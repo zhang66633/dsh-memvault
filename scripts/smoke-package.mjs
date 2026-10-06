@@ -19,7 +19,8 @@
  *   - `files[]` names real paths, otherwise a published tarball silently lacks
  *     the patch or the docs.
  */
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -159,6 +160,20 @@ const offenders = SOURCE_FILES.filter((rel) => !ALLOWED_ABSOLUTE_PATH_FILES.incl
 check('an absolute path appears only in the files allowed to carry one',
   offenders.length === 0,
   offenders.length > 0 ? `new hard-coded path(s) in: ${offenders.join(', ')}` : 'allow-list intact')
+{
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-mv-env-'))
+  writeFileSync(join(dir, '.env'), 'MEMVAULT_DB_PATH=data/x.db\nMEMVAULT_EMBEDDER=openai\nOPENAI_EMBEDDING_MODEL=qwen3-embedding-8b\n')
+  const { checkPaths } = await import('../lib/index.js')
+  const options = { pythonPath: process.execPath, dbPath: join(dir, 'data', 'x.db'), statePath: join(dir, 'state.json') }
+  const row = checkPaths({ ...options, projectDir: dir }).find((r) => r.key === 'serviceEmbedder')
+  check('the service embedder is reported, with its model',
+    Boolean(row) && row.detail.includes('openai') && row.detail.includes('qwen3-embedding-8b'),
+    row ? row.detail : 'no serviceEmbedder row')
+  const bare = checkPaths({ ...options, projectDir: join(dir, 'nope') }).find((r) => r.key === 'serviceEmbedder')
+  check('an .env that sets nothing says which default applies',
+    Boolean(bare) && bare.detail.includes('local'), bare ? bare.detail : 'missing')
+}
+
 check('every allow-listed file still contains one (a stale entry would be a lie)',
   ALLOWED_ABSOLUTE_PATH_FILES.every((rel) => DRIVE_PATH.test(readFileSync(join(root, rel), 'utf8'))),
   ALLOWED_ABSOLUTE_PATH_FILES.join(', '))
