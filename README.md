@@ -13,6 +13,7 @@
 
 <p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-0.9.10-4a6cf7">
+  <img alt="npm" src="https://img.shields.io/npm/v/dsh-memvault?color=cb3837">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -76,6 +77,12 @@ The plugin does three things:
 ## 🚀 Quick start
 
 **Prerequisite:** a working MemVault checkout — its virtualenv and its `memvault.db` (the store is shared with the MemVault service and MCP clients; this plugin only ever `SELECT`s from it).
+
+Install from npm (0.9.10 and newer):
+
+```powershell
+dsh plugin --profile desktop add dsh-memvault
+```
 
 Self-owned install (what this repo does on the author's machine):
 

@@ -13,6 +13,7 @@
 
 <p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-0.9.10-4a6cf7">
+  <img alt="npm" src="https://img.shields.io/npm/v/dsh-memvault?color=cb3837">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -76,6 +77,12 @@
 ## 🚀 快速开始
 
 **前置条件**：一份能跑的 MemVault checkout——它的 virtualenv 与 `memvault.db`（该库与 MemVault 服务、MCP 客户端共享；本插件只对它 `SELECT`）。
+
+从 npm 安装（0.9.10 起）：
+
+```powershell
+dsh plugin --profile desktop add dsh-memvault
+```
 
 本机自持式安装（也就是本仓库在作者机器上的装法）：
 

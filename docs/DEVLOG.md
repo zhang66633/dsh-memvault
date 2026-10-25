@@ -773,6 +773,21 @@ npm/pnpm 说"不满足"。同一份声明，两个答案——这就是要消掉
 20. **`/plugins/<包名>/client.js` 在 0.2.1 里裸访问是 404，这是设计不是故障。** 客户端模块路由只认组合出的
     `??...&rev=...` 批地址与带 `rev` 的 chunk 地址（`bundleResource` 先查响应表，查不到就 404）。
     拿不带 `rev` 的地址去探"面板有没有被服务"只会得到假信号——和 §21 教训二同一类：**探针报"没有"时，先怀疑探针**。
-21. **市场里的"未声明"和"不兼容"是两种结论。** `basis: 'unavailable'`（清单取不到，比如还没发布）与
+21. **市场里的"未声明"和"不兼容"是两种结论。** `basis: 'unavailable'`（清单取不到，比如刚发布、索引还没抓到）与
     `basis: 'undeclared'`（没有任何 DSH 声明）都**保持可见**，只有拿到清单且判定为 false 才隐藏。
     所以"在市场里找不到自己"要先看有没有发布，而不是先怀疑兼容性。
+
+### 22.5 上架记录（2026-10-25）
+
+- **包名 `dsh-memvault`（无 scope），版本 0.9.10**，`npm publish --registry https://registry.npmjs.org --access public`，
+  发布账号 `zheexinn`。发布前 `npm view` 是 404（名字可用），发布后 `dist-tags.latest = 0.9.10`。
+- **发布物自检，而不是仓库自检**：把 registry 上的 tgz 拉下来解包，在解包目录里跑 `node scripts/smoke-package.mjs` → ALL PASS。
+  仓库绿不等于别人装到的东西绿，这一步验的是后者（tarball 4,263,095 字节，与本地 `npm pack` 一致）。
+- **市场里的条目早就在，不全是因为这次发布**：`awesome-dsh-plugin.com/plugins.json` 里
+  `zhang66633/dsh-memvault` 从 **2026-10-13** 起就是一条 GitHub 条目（`npm: null`），由站点自己的每日探测补
+  `npm`/`version`（`build-site.yml`：只有 nightly 02:23 UTC 与手动 dispatch 会全量探测，push 构建不探测）。
+  所以 npm 安装入口会出现在**下一次 nightly 之后**；这不在本仓库能触发的范围内。
+- **市场自己的兼容判定不依赖那个索引**：它会直接查 npm 清单。发布后对
+  `/dsh-market/discovery-compatibility` 传 `dsh-memvault`，返回 `compatible`，`declarations` 就是 §22.2 那一条区间。
+- 一个 registry 细节：新包发布时 packument 里会短暂出现 `0.0.0-stage`（比正式版本早 66 秒的占位条目），
+  `dist-tags.latest` 不受影响；不要去 `npm unpublish` 它。
