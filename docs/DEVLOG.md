@@ -712,3 +712,67 @@ spec 里 `dbPath` 的默认值原本是**本机字面量**（经 `blocks.js` 传
    改成显式 import。
 4. 失败处理里的 `git checkout` **把我上一轮已通过的改动一起回滚了**（树本来是脏的）。
    教训：守卫必须在"应用补丁之前"先确认起点干净，并把"起点状态"打出来。
+
+---
+
+## 22. 0.9.10：把「兼容 DSH 0.2.1-rc.3」写成声明，并用三种判定器各验一遍
+
+桌面端升到 **0.2.1-rc.3** 后，插件市场顶部会写「已隐藏 N 个与 DSH 0.2.1-rc.3 不兼容的插件」。
+这一轮要回答的是两件事：**本插件在那套判定里是什么结论**，以及**这个结论是不是声明本身给出的**。
+
+### 22.1 先读判定器，而不是先改字段
+
+读 `app.asar` 里三处（读法见 §19）：
+
+| 判定器 | 读什么 | 怎么比 |
+|---|---|---|
+| host gate：`dsh-app-boot/lib/index.js` 的 `evaluatePluginCompatibility` → `unmetRequirements` | **有 `engines.dsh` 就只看它**，否则看全部 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` peer | `semver.satisfies(runtime, range, { includePrerelease: true })` |
+| 市场：`dshmarket/lib/discovery-compatibility.js` 的 `deriveHostCompatibility` | 先 `engines.dsh`（顶层或 `dsh.engines.dsh`），再把**本机装了的** DSH 包 peer 一起算 | 同样 `includePrerelease: true`，并对旧式 caret 上限给方向性宽容 |
+| npm / pnpm 的 peer 解析 | 只读 `peerDependencies` | **不带** `includePrerelease` |
+
+第三条是这轮真正的差异来源。`0.2.1-rc.3` 是预发布，而 semver 规定「带预发布的版本只匹配**同一
+major.minor.patch** 上带预发布的比较器」；`>=0.2.0-rc.1 <0.3.0-0` 里没有任何落在 0.2.1 上的比较器，
+所以**严格判定下 0.2.1-rc.3 不满足**。宿主与市场都开了 includePrerelease，于是它们说"兼容"；
+npm/pnpm 说"不满足"。同一份声明，两个答案——这就是要消掉的东西。
+
+### 22.2 改法：同一区间，三个读者
+
+- **补 `engines.dsh`**：它是 host gate 的**第一优先**字段，也是 `dsh-package-manifest` 文档里作者声明兼容性的正式位置。
+  之前不写它是因为当时只有 peer 会被检查（§6.2）；现在写，是因为 0.2.1 的 gate 会优先读它。
+- **两处 DSH peer 与它写同一个字符串**：
+  `>=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-0 <0.3.0-0`
+- **新增的第三段只服务严格判定器**（宿主本来就能过）：比较器落在 0.2.1 上且自带预发布，于是
+  `0.2.1-rc.3` 在**不带** includePrerelease 时也匹配。生态里同类插件也是这么写的（`dsh-cost-meter` 的 peer 就带这一段）。
+- **保留 0.1 段**：0.1 的预发布（如 `0.1.7-rc.2`）在严格判定下同样匹配不了，但宿主一直带 includePrerelease 判，
+  所以 0.1 主机不受影响；删掉它反而会让声明说谎。
+
+这是**纯声明改动**：没有一行运行时代码变了，所以版本只进 patch（0.9.9 → 0.9.10）。
+
+### 22.3 验证（规则 ③）
+
+1. **semver 7.8.5 矩阵**（`includePrerelease` 开/关各跑一遍）：
+
+   | 版本 | 严格 | includePrerelease |
+   |---|---|---|
+   | 0.1.7-rc.2 | ✗ | ✓ |
+   | 0.2.0 / 0.2.0-rc.1 | ✓ | ✓ |
+   | 0.2.1-rc.3 / 0.2.1 | ✓ | ✓ |
+   | 0.2.5 | ✓ | ✓ |
+   | 0.3.0 | ✗ | ✗ |
+
+2. **host gate 语义复现**：按 `unmetRequirements` 的规则（有 `engines.dsh` 就只看它）对 `0.2.1-rc.3` 判 → 通过。
+3. **市场自己的代码**：直接 import 已安装的 `dshmarket/lib/discovery-compatibility.js`，用本包的 manifest facts 调
+   `deriveHostCompatibility(facts, '0.2.1-rc.3', hostPackages)` → `compatible`，`requirement` 就是那一条区间。
+4. **活的宿主**：`0.2.1-rc.3` 桌面端上 `/memvault/api/status` 回 200（注入与面板路由都在），
+   注入文本出现在本会话的 runtime 上下文里。
+5. **`npm test` 全绿**；契约套件新增 3 条：`engines.dsh` 存在、区间含 `>=0.2.1-0`、三条声明**必须同一个字符串**
+   （防的是"三处各写一遍、改了一处"——那种漂移正是把"兼容"变成猜的来源）。
+
+### 22.4 踩坑
+
+20. **`/plugins/<包名>/client.js` 在 0.2.1 里裸访问是 404，这是设计不是故障。** 客户端模块路由只认组合出的
+    `??...&rev=...` 批地址与带 `rev` 的 chunk 地址（`bundleResource` 先查响应表，查不到就 404）。
+    拿不带 `rev` 的地址去探"面板有没有被服务"只会得到假信号——和 §21 教训二同一类：**探针报"没有"时，先怀疑探针**。
+21. **市场里的"未声明"和"不兼容"是两种结论。** `basis: 'unavailable'`（清单取不到，比如还没发布）与
+    `basis: 'undeclared'`（没有任何 DSH 声明）都**保持可见**，只有拿到清单且判定为 false 才隐藏。
+    所以"在市场里找不到自己"要先看有没有发布，而不是先怀疑兼容性。

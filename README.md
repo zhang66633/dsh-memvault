@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.9-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.10-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -64,7 +64,8 @@ The plugin does three things:
 
 | Question | Answer |
 |---|---|
-| **DSH Desktop** | ✅ Verified live on the reserved `desktop` profile: the bundle (`dsh.bundle.patch`) loads, the plugin row is `active`, and the injected blocks appear in the runtime-context snapshot. |
+| **DSH Desktop** | ✅ Verified live on **0.2.1-rc.3** with the reserved `desktop` profile: the bundle (`dsh.bundle.patch`) loads, the plugin row is `active`, `/memvault/api/status` answers 200, and the injected blocks appear in the runtime-context snapshot. |
+| **DSH versions** | Supports the 0.1.x and 0.2.x lines, including 0.2.1 prereleases. `engines.dsh` and both DSH peer declarations carry **one range**; its `>=0.2.1-0 <0.3.0-0` arm exists for **strict** readers that do not pass `includePrerelease` (npm/pnpm peer resolution, the market's discovery preflight) — without it they reject `0.2.1-rc.3`. |
 | **Do I need a client half?** | Only for the panel. `dsh.client.platform: 'web'` serves the browser half; the memory bridge itself runs entirely host-side, so disabling the client half costs visibility, never injection. |
 | **DSH Web / headless / SDK profiles** | ✅ The same bundle works wherever the host runs. Headless compositions simply have no `webServer`, and the panel's child fiber waits for it instead of failing. `systemPrompt` is the only *required* service. |
 | **Is the panel visible?** | ✅ Two seats: a **记忆** tab beside 聊天 / 轨迹 in the conversation ring, and a **MemVault 记忆桥** page under Settings → Plugins. Both are read-only views over the injected blocks and the extraction state. |

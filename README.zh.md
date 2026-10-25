@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.9-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.9.10-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="platform" src="https://img.shields.io/badge/platform-DeepSeek%20Harness-f76b15">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
@@ -64,7 +64,8 @@
 
 | 问题 | 结论 |
 |---|---|
-| **DSH 桌面端** | ✅ 已在保留的 `desktop` profile 上**实测**：bundle（`dsh.bundle.patch`）加载成功，插件行状态 `active`，注入的块出现在 runtime 上下文快照里。 |
+| **DSH 桌面端** | ✅ 已在 **0.2.1-rc.3** 的保留 `desktop` profile 上**实测**：bundle（`dsh.bundle.patch`）加载成功，插件行状态 `active`，`/memvault/api/status` 回 200，注入的块出现在 runtime 上下文快照里。 |
+| **DSH 版本区间** | 支持 0.1.x 与 0.2.x 两条线，含 0.2.1 的预发布。`engines.dsh` 与两条 DSH peer 声明写的是**同一个区间**；其中 `>=0.2.1-0 <0.3.0-0` 这一段专给**不带 `includePrerelease`** 的严格判定器（npm/pnpm 的 peer 解析、市场的发现前检），否则 `0.2.1-rc.3` 会被它们判成不满足。 |
 | **需要客户端半边吗？** | 只有面板需要。`dsh.client.platform: 'web'` 负责把浏览器半边提供出去；记忆桥本身完全跑在 host 侧，所以关掉客户端半边损失的是可见性，绝不是注入。 |
 | **Web / 无头 / SDK profile** | ✅ 只要 host 在跑，同一个 bundle 就能用。无头组合没有 `webServer`，面板那条子 fiber 会等着它而不是失败。唯一**必需**的服务是 `systemPrompt`。 |
 | **面板可见吗？** | ✅ 两个位置：会话页签环里 聊天 / 轨迹 旁边的 **记忆** 页签，以及 Settings → Plugins 里的 **MemVault 记忆桥** 页。两者都是只读视图，数据来自注入的块与抽取状态。 |

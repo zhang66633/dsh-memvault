@@ -1,6 +1,6 @@
 {
   "name": "dsh-memvault",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "description": "DeepSeek Harness plugin: inject MemVault core memory blocks into the system prompt, extract finished turns as one windowed pass, and show, edit, trace, review and replay all of it in a memory panel",
   "type": "module",
   "main": "lib/index.js",
@@ -54,7 +54,8 @@
     "panel"
   ],
   "engines": {
-    "node": ">=22.13"
+    "node": ">=22.13",
+    "dsh": ">=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-0 <0.3.0-0"
   },
   "dsh": {
     "manifestVersion": 1,
@@ -66,8 +67,8 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
-    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-0 <0.3.0-0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-0 <0.3.0-0",
     "@deepseek-ai/schemastery": "^3.18.0"
   },
   "license": "MIT"

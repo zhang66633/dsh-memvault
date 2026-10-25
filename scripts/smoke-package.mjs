@@ -16,6 +16,9 @@
  *   - only `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*` peers are compatibility
  *     checked, and a missing declaration imposes no constraint at all — so the
  *     declarations that exist are checked for the right package family.
+ *   - `engines.dsh` decides alone when present, so it must agree with every DSH
+ *     peer, and the range must cover the 0.2.1 prerelease line even for readers
+ *     that do not pass `includePrerelease`.
  *   - `files[]` names real paths, otherwise a published tarball silently lacks
  *     the patch or the docs.
  */
@@ -94,6 +97,28 @@ check('a config spec exists as the single source of defaults',
 check('peer ranges are non-empty strings',
   Object.values(pkg.peerDependencies ?? {}).every((r) => typeof r === 'string' && r.trim() !== ''))
 check('DshPackageManifest format version declared', pkg.dsh?.manifestVersion === 1)
+
+// ── one host range, three readers ───────────────────────────────────────────
+// The host gate (`dsh-app-boot`'s `evaluatePluginCompatibility`) reads
+// `engines.dsh` first and only falls back to the `@deepseek-ai/dsh*` peers. Both
+// sides call `semver.satisfies(runtime, range, { includePrerelease: true })`,
+// but not every reader does: npm/pnpm peer resolution and dsh-market's discovery
+// preflight are allowed to be stricter, and a bare `>=0.2.0-rc.1 <0.3.0-0` does
+// NOT match `0.2.1-rc.3` there (a prerelease only matches a comparator on its own
+// major.minor.patch tuple, and none mentions 0.2.1). The `>=0.2.1-0 <0.3.0-0`
+// arm exists for exactly that; verified with semver 7.8.5 both ways. The three
+// strings must stay identical — they describe one requirement, and drift between
+// them is how "compatible" turns into a guess.
+const DSH_RANGE = pkg.engines?.dsh
+const dshPeers = Object.entries(pkg.peerDependencies ?? {})
+  .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
+check('declares engines.dsh, which the host gate reads before peers',
+  typeof DSH_RANGE === 'string' && DSH_RANGE.trim() !== '', String(DSH_RANGE))
+check('engines.dsh covers the 0.2.1 prerelease line for strict matchers',
+  typeof DSH_RANGE === 'string' && DSH_RANGE.includes('>=0.2.1-0 <0.3.0-0'))
+check('every DSH peer declares the same host range as engines.dsh',
+  dshPeers.length > 0 && dshPeers.every(([, range]) => range === DSH_RANGE),
+  dshPeers.map(([name]) => name).join(', '))
 
 // ── the browser half ────────────────────────────────────────────────────────
 // `dsh.client` is parsed by @deepseek-ai/dsh-client-modules, which reads
