@@ -854,3 +854,10 @@ bundle、注入与面板路由都不依赖 rc.3 → rc.5 之间的差异。所�
 - 实测：把最近 8 条含助手结论的对话（4,262 字）喂给同一管线，仍返回 0 条。**所以「多送助手文本」本身
   不解决这个问题**；要让项目结论入库，需要显式 `memory_add`（procedural）或改抽取范围与提示词。
 - 本轮手动写入 3 条 procedural 记忆（MCP 修复、发布流程、本根因），面板因此重新出现 11-01 的记录。
+
+### 24.5 发版记录（2026-11-01）
+
+- `npm publish --registry https://registry.npmjs.org --access public`，发布 `dsh-memvault@0.9.12`；
+  `dist-tags.latest` 约 3 分钟后变为 `0.9.12`。
+- 发布物自检：registry 的 tgz 解包后 `node scripts/smoke-package.mjs` → ALL PASS；
+  4,267,121 字节，sha512 与本地 `npm pack` 一致。
