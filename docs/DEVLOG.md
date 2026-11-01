@@ -894,3 +894,36 @@ bundle、注入与面板路由都不依赖 rc.3 → rc.5 之间的差异。所�
 ### 25.4 下一步
 
 M1：抽取（HTTP）+ 结构化决策 + supersede；M2：检索（FTS + 向量 + RRF + 可答性守卫）+ MCP 工具。
+
+## 26. 2026-11-01：M1 —— 抽取、决策与 supersede
+
+### 26.1 做了什么
+
+- `lib/core/llm.js`：OpenAI 兼容 chat 客户端（fetch + AbortController 超时；`fetchImpl` 可注入，测试不碰网络）。
+- `lib/core/extract.js`：`LLMExtractor`（提示词从 Python 原样搬，含第 6/7 条“不要把助手做过的事写成用户属性”），
+  `RuleExtractor`（zh/en 常见自述正则的**子集**，宁可少抽不臆造）；`parseFacts` 容错解析。
+- `lib/core/decide.js`：`ruleDecision`（完全重复 → none；否定词 → supersede；同槽位且文本重叠 → supersede；
+  否则 add）+ `LLMDecider`（模型看候选选操作，答案**必须命中候选集**，否则按条回退规则）。
+- `lib/core/write.js`：`remember()` 一条链路：抽取 → 决策 → add/supersede/none → 同批关系；
+  更新一律写 `supersede`，不原地改文本。
+
+### 26.2 两个取舍
+
+- **候选发现不用 FTS**：trigram 的 `MATCH` 是对查询 trigram 做 AND，改写事实（“…是李四” vs “…是张三”）
+  一个都匹配不上——而写入决策恰恰要为这种句子服务。M1 直接在当前作用域（数百行）上算 bigram Jaccard 取 top-3；
+  FTS 留给 M2 的检索召回。
+- **同槽位阈值取 0.25**：换值必然低重叠（“编辑器是 VS Code”→“编辑器是 Neovim”，Jaccard≈0.33），
+  阈值高了会把每次换值变成第二条事实；槽位本身就是证据。代价是同槽位但语义不同的句子可能被替换，
+  所以模型可用时优先让模型判。
+
+### 26.3 验证
+
+- 新增 9 条测试（正则抽取、提示词输入只含 user、解析容错、相似度、规则决策、模型决策校验与回退、
+  端到端 remember、重复跳过），全量 **18 条**；`npm test`（6 个 smoke + core）全绿。
+- **真实网关抽查失败，但不是客户端的问题**：`LLMExtractor` 对真实端点两次分别 45s/90s 中止；
+  用 curl 直连同一端点（合法 body 文件）25s 零字节超时。也就是说网关当前不响应生成，
+  客户端的 abort 是正确行为（不卡住 turn），与 Python 引擎此前的 ReadTimeout 同源。
+
+### 26.4 下一步
+
+M2：检索（FTS + 向量 + RRF + 可答性守卫）+ MCP 工具 + 面板读新库。

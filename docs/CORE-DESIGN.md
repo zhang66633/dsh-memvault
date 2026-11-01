@@ -2,7 +2,7 @@
 
 > 目标：Python 引擎退役后，插件自带**存储、抽取、检索**三件事，装一个插件即完整功能。
 > 旧库 `data/memvault.db` 导出成 JSON 后归档，新库按本文结构重建。
-> 状态：**M0 已实现**（`lib/core/`，测试 `test/core.test.mjs`）；M1 起待做。
+> 状态：**M0 + M1 已实现**（`lib/core/`，测试 `test/core*.test.mjs`）；M2 起待做。
 
 ## 1. 约束（本机实测，不是假设）
 
