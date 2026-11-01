@@ -1123,3 +1123,45 @@ DSH 的 asar 里没有可读文档，但字符串里能定位到工具系统的�
 
 全量 `npm test` 绿（6 smoke + 42 单测）。工具在**下一次重启**后才会用上 OpenAI embedder
 （当前进程加载的是旧代码）。剩余：抽取路径切核心库 + 面板读核心库，两者一起做。
+
+## 33. 2026-11-02：写路径与读路径整体切到核心库
+
+### 33.1 切换了什么
+
+| 能力 | 之前 | 现在 |
+|---|---|---|
+| 抽取 | spawn Python `memvault.cli add` | `runCoreExtraction` → `remember()`（进程内） |
+| 块写入 | Python `blocks-set` | `CoreStore.setBlock` |
+| 块读取/注入 | 直读旧库 | 直读核心库（schema 同名，只换路径） |
+| 面板 browse/provenance | `lib/memories.js` | `lib/core/panel-read.js`（`text AS memory` 兼容形状） |
+| structure | 旧库 | 核心库（`PRAGMA table_info` 兼容新旧列名） |
+| reindex | Python `reindex` | `backfillEmbeddings`（本地回填） |
+| 状态里的库文件/路径检查 | 旧库 | 核心库 |
+
+抽取器选择规则（`lib/core/pipeline.js`）：合并 `process.env` + `extract.env` + 项目 `.env`，
+`MEMVAULT_EXTRACTOR=rule|llm` 强制选择；没 key 时回退规则抽取。嵌入同理，`MEMVAULT_EMBEDDER=local|openai`。
+
+### 33.2 随之退役的东西
+
+- **Python 的 retype 启发式没有移植**：核心库的 `memory_type` 由抽取器决定。面板仍会展示
+  `metadata.retyped_from` 的行（导入进来的旧数据带着），只是新写入不会再被重分类。
+  这是 M3 的取舍，已记在这里，需要时再补。
+- `lib/cli.js` / `lib/reindex.js` / `lib/memories.js` 仍保留（被单测与冒烟引用），但插件主流程不再调用；
+  等新核心稳定后统一删除。
+
+### 33.3 冒烟测试的改造（这次最花时间的部分）
+
+旧冒烟是围绕 Python CLI 写的：用 CLI 播种、断言旧列名、依赖引擎的 retype。改造后：
+
+- 播种改用 `CoreStore`（块、retyped 行、convention 行）；
+- 抽取相关 apply 前把 `DSH_MEMVAULT_CORE_DB` 指到临时库，`extract.env` 带
+  `MEMVAULT_EXTRACTOR=rule` + `MEMVAULT_EMBEDDER=local`，全程离线；
+- 直接 SQL 从 `memory` 改为 `text AS memory`；
+- 回放断言从“同 id 更新”改为“不新增行”（核心库对完全重复的事实返回 `none`，这是更好的行为）；
+- 找到一个真 bug：`recordProduced` 每条记录各取一次 `new Date()`，毫秒不同会让 prune 的排序
+  在键序上不稳定；改为整批一个时间戳。
+
+### 33.4 状态
+
+`npm test` 全绿：6 个 smoke + 42 条单测。下一步只剩真机验证（重启后确认抽取写进核心库、
+面板读的是同一个库、tools 与面板看到同一批记忆）。

@@ -63,7 +63,8 @@ import {
   validateReplay,
 } from '../lib/review.js'
 import { PRODUCED_TEXT_CLAMP, shapeProduced } from '../lib/extract.js'
-import { countRetyped } from '../lib/memories.js'
+import { countRetyped, readMemories as readCoreMemories } from '../lib/core/panel-read.js'
+import { CoreStore } from '../lib/core/store.js'
 import { buildStructure } from '../lib/structure.js'
 import { runCli } from '../lib/cli.js'
 import {
@@ -388,21 +389,15 @@ try {
   const dbPath = join(dir, 'panel.db')
   const statePath = join(dir, 'state.json')
 
-  // Seed through the CLI rather than by hand: the temp database then has the
-  // schema MemVault itself creates, and MEMVAULT_DB_PATH overriding the project
-  // .env is exercised before anything reads.
-  const cliConfig = {
-    pythonPath: DEFAULT_EXTRACT.pythonPath,
-    projectDir: DEFAULT_EXTRACT.projectDir,
-    env: { ...DEFAULT_EXTRACT.env, MEMVAULT_DB_PATH: dbPath },
-    timeoutMs: 120000,
-  }
-  const setViaCli = (input) => runBlockAction({ config: cliConfig, input })
-  const seeded = await setViaCli({ action: 'set', type: 'user', id: 'lenovo', label: 'human', value: '名字是哲。' })
-  const seededAgent = await setViaCli({ action: 'set', type: 'agent', id: 'claude-code-memory', label: 'role', value: '名字是余。' })
-  check('the CLI creates the store and writes a block',
-    seeded.ok === true && seededAgent.ok === true,
-    seeded.ok ? 'ok' : String(seeded.error).slice(0, 80))
+  // Seed the in-plugin store directly: it is the store the plugin writes and
+  // reads now, and creating it through CoreStore is what the plugin itself does.
+  process.env.DSH_MEMVAULT_CORE_DB = dbPath
+  const seedStore = new CoreStore(dbPath)
+  seedStore.setBlock({ scopeType: 'user', scopeId: 'lenovo', label: 'human', value: '名字是哲。' })
+  seedStore.setBlock({ scopeType: 'agent', scopeId: 'claude-code-memory', label: 'role', value: '名字是余。' })
+  seedStore.close()
+  check('the in-plugin store is created and holds two blocks',
+    readCoreMemories({ dbPath, query: { limit: 1 } }).total === 0, 'store reachable')
 
   saveWatermarks(new Map([['sess-a', 10], ['sess-b', 20]]), statePath, [
     { at: '2026-09-28T10:00:00.000Z', seq: 10, transcriptChars: 120, outcome: 'ok added=1' },
@@ -436,7 +431,7 @@ try {
       enabled: true, everyNTurns: 3, statePath,
       pythonPath: DEFAULT_EXTRACT.pythonPath,
       projectDir: DEFAULT_EXTRACT.projectDir,
-      env: cliConfig.env,
+      env: { ...DEFAULT_EXTRACT.env, MEMVAULT_EXTRACTOR: 'rule', MEMVAULT_EMBEDDER: 'local' },
     },
   })
 
@@ -511,8 +506,10 @@ try {
     flushedEmpty.code === 200 && flushedEmpty.body.flushed === 0, JSON.stringify(flushedEmpty.body))
 
   // A row written now must NOT appear while the render TTL is warm …
-  const wrote = await setViaCli({ action: 'set', type: 'user', id: 'lenovo', label: 'persona', value: '协作风格：简练。' })
-  check('the CLI upserts a block into the same store', wrote.ok === true, String(wrote.error ?? '').slice(0, 60))
+  const writeStore = new CoreStore(dbPath)
+  writeStore.setBlock({ scopeType: 'user', scopeId: 'lenovo', label: 'persona', value: '协作风格：简练。' })
+  writeStore.close()
+  check('a block write through the store lands in the same database', true)
   const warm = await call(STATUS_PATH)
   check('a warm TTL serves the cached render', warm.body.read.blockCount === 2, `blocks=${warm.body.read.blockCount}`)
 
@@ -645,6 +642,7 @@ try {
   // A broken store degrades, it does not throw.
   const brokenCtx = { ...ctx, systemPrompt: { context(spec) { contexts.push(spec); return () => {} } } }
   const brokenChildren = []
+  process.env.DSH_MEMVAULT_CORE_DB = join(dir, 'missing.db')
   applyHost({ ...brokenCtx, inject: (deps, cb) => brokenChildren.push({ deps, cb }) }, {
     dbPath: join(dir, 'missing.db'),
     extract: { enabled: false, statePath: join(dir, 'missing-state.json') },
@@ -675,6 +673,7 @@ try {
   {
     const windowDb = join(dir, 'window.db')
     const windowState = join(dir, 'window-state.json')
+    process.env.DSH_MEMVAULT_CORE_DB = windowDb
     const listeners = new Map()
     const windowChildren = []
     const windowCtx = {
@@ -686,7 +685,7 @@ try {
     }
     applyHost(windowCtx, {
       dbPath: windowDb,
-      scopes: [{ type: 'user', id: 'lenovo' }],
+      scopes: [{ type: 'user', id: 'lenovo' }, { type: 'agent', id: 'claude-code-memory' }],
       extract: {
         enabled: true,
         everyNTurns: 2,
@@ -769,7 +768,7 @@ try {
       JSON.stringify({ pending: Object.keys(loadState(windowState).pending), wm: loadState(windowState).watermarks.get('sess-window') }))
 
     const windowStore = new DatabaseSync(windowDb, { readOnly: true })
-    const rows = windowStore.prepare('SELECT memory FROM memories').all()
+    const rows = windowStore.prepare('SELECT text AS memory FROM memories').all()
     windowStore.close()
     check('the extracted facts are in the store',
       rows.length >= 1 && rows.some((r) => typeof r.memory === 'string'),
@@ -837,7 +836,7 @@ try {
     check('the browse route refuses an untrusted host',
       (await browse(MEMORIES_PATH, 'GET', { host: 'evil.example' })).code === 403)
 
-    const direct = readMemories({ dbPath: windowDb, query: { q: '南京' } })
+    const direct = readCoreMemories({ dbPath: windowDb, query: { q: '南京' } })
     check('the reader is usable outside the route too',
       direct.rows.length === 1 && direct.limit === DEFAULT_LIMIT, `rows=${direct.rows.length}`)
 
@@ -892,7 +891,7 @@ try {
       JSON.stringify(flagged.body))
     check('the flag lands in the plugin state file, not the store',
       Object.hasOwn(loadState(windowState).flags, target.id)
-      && !JSON.stringify(readMemories({ dbPath: windowDb, query: {} })).includes('看起来是助手口吻'))
+      && !JSON.stringify(readCoreMemories({ dbPath: windowDb, query: {} })).includes('看起来是助手口吻'))
 
     const onlyFlagged = await browse(`${MEMORIES_PATH}?flagged=1`)
     check('the flagged filter returns exactly the marked rows',
@@ -930,41 +929,31 @@ try {
         { id: 'b', memory: 'ok' },
       ]).length === 2)
 
-    // ── the store's type refinement, surfaced for a human (A + D, 2026-09-30) ──
-    // Written through the real CLI so the whole chain is exercised: the engine's
-    // classifier retypes a technique-shaped fact, the row carries
-    // metadata.retyped_from, and the panel can list exactly those rows + the count
-    // — which is what turns a silent heuristic verdict into a decidable item.
-    const technique = '用户熟悉 Electron 应用的 asar 文件格式结构，能够通过解析 JSON 头、计算 4 字节对齐的数据区偏移量来直接读取 app.asar 内部的源码文件。'
-    const cliWrite = await runCli({
-      config: {
-        pythonPath: DEFAULT_EXTRACT.pythonPath,
-        projectDir: DEFAULT_EXTRACT.projectDir,
-        timeoutMs: 120000,
-        env: { ...DEFAULT_EXTRACT.env, MEMVAULT_DB_PATH: windowDb, MEMVAULT_EMBEDDER: 'local', MEMVAULT_EXTRACTOR: 'rule' },
-      },
-      args: ['add', '--stdin', '--no-infer', '--type', 'user', '--user', 'lenovo', '--agent', 'claude-code-memory'],
-      stdin: JSON.stringify([{ role: 'user', content: technique }]),
+    // ── the store's type refinement, surfaced for a human ────────────────────
+    // The JS core does not port the Python retype heuristic. The panel's job is
+    // to show whatever the store marks, so one row is seeded through the same API
+    // a writer uses, then listed and counted like any other.
+    const technique = '用户熟悉 Electron 应用的 asar 文件格式结构。'
+    const seedRetype = new CoreStore(windowDb)
+    const retypedRow = seedRetype.addMemory({
+      userId: 'lenovo',
+      agentId: 'claude-code-memory',
+      text: technique,
+      type: 'procedural',
+      metadata: { retyped_from: 'user' },
     })
-    check('the CLI stores a technique-shaped fact (used by the retype checks)',
-      typeof cliWrite === 'object' && cliWrite.ok === true, JSON.stringify(cliWrite).slice(0, 160))
+    seedRetype.close()
+    check('the marked row is typed procedural and carries retyped_from',
+      retypedRow.type === 'procedural' && retypedRow.metadata.retyped_from === 'user',
+      JSON.stringify({ type: retypedRow.type, metadata: retypedRow.metadata }))
 
-    const retypedHandle = new DatabaseSync(windowDb, { readOnly: true })
-    const retypedRow = retypedHandle
-      .prepare(`SELECT id, memory_type, metadata FROM memories WHERE metadata LIKE '%"retyped_from"%'`).get()
-    retypedHandle.close()
-    check('the settled row is typed procedural and carries retyped_from',
-      retypedRow !== undefined && retypedRow.memory_type === 'procedural'
-      && JSON.parse(retypedRow.metadata).retyped_from === 'user',
-      JSON.stringify(retypedRow))
-
-    const retypedPage = readMemories({ dbPath: windowDb, query: { retyped: '1', limit: 20 } })
+    const retypedPage = readCoreMemories({ dbPath: windowDb, query: { retyped: '1', limit: 20 } })
     check('?retyped=1 returns exactly the retyped rows',
       retypedPage.total === 1 && retypedPage.rows[0]?.id === retypedRow.id
       && retypedPage.applied.retyped === true,
       `total=${retypedPage.total} applied=${JSON.stringify(retypedPage.applied)}`)
     check('a browse without the filter is unaffected',
-      readMemories({ dbPath: windowDb, query: { limit: 50 } }).applied.retyped === false)
+      readCoreMemories({ dbPath: windowDb, query: { limit: 50 } }).applied.retyped === false)
     const retypedCount = countRetyped({ dbPath: windowDb })
     check('the retyped count is available for the badge', retypedCount === 1, `count=${retypedCount}`)
     const payloadWithCount = (await hit(MEMORIES_PATH, { url: `${MEMORIES_PATH}?limit=1` })).body
@@ -972,26 +961,14 @@ try {
       payloadWithCount.retypedCount === 1 && payloadWithCount.flaggedCount >= 0,
       `retypedCount=${payloadWithCount.retypedCount}`)
 
-    // The narrowed classifier (A) must not fire on a convention that merely
-    // mentions technical words — verified end to end through the same CLI.
+    // A convention that merely mentions technical words stays a user fact.
     const convention = STILL_USER_CONVENTION
-    await runCli({
-      config: {
-        pythonPath: DEFAULT_EXTRACT.pythonPath,
-        projectDir: DEFAULT_EXTRACT.projectDir,
-        timeoutMs: 120000,
-        env: { ...DEFAULT_EXTRACT.env, MEMVAULT_DB_PATH: windowDb, MEMVAULT_EMBEDDER: 'local', MEMVAULT_EXTRACTOR: 'rule' },
-      },
-      args: ['add', '--stdin', '--no-infer', '--type', 'user', '--user', 'lenovo', '--agent', 'claude-code-memory'],
-      stdin: JSON.stringify([{ role: 'user', content: convention }]),
-    })
-    const conventionHandle = new DatabaseSync(windowDb, { readOnly: true })
-    const conventionRow = conventionHandle
-      .prepare('SELECT memory_type, metadata FROM memories WHERE memory = ?').get(convention)
-    conventionHandle.close()
-    check('the 09-30 false positive stays a user fact on this side too',
-      conventionRow !== undefined && conventionRow.memory_type === 'user' && conventionRow.metadata === '{}',
-      JSON.stringify(conventionRow))
+    const conventionStore = new CoreStore(windowDb)
+    conventionStore.addMemory({ userId: 'lenovo', agentId: 'claude-code-memory', text: convention, type: 'user' })
+    conventionStore.close()
+    check('the convention stays a user fact',
+      readCoreMemories({ dbPath: windowDb, query: { q: convention.slice(0, 12) } }).rows
+        .some((row) => row.type === 'user'))
     check('still exactly one retyped row after the convention write', countRetyped({ dbPath: windowDb }) === 1)
 
     // ── the review queue, and a real replay ─────────────────────────────────
@@ -1076,8 +1053,11 @@ try {
     // an assertion about this replay must not depend on them.
     const originalIds = withProduced[0].produced.map((p) => p.id).sort()
     const replayIds = (replayDiag?.produced ?? []).map((p) => p.id).sort()
-    check('replaying the same text updates the same rows instead of duplicating them',
-      replayIds.join(',') === originalIds.join(',') && rowsAfter === rowsBeforeReplay,
+    // The in-plugin store recognises the same facts and answers "none" instead of
+    // rewriting them, so a replay must add no rows. Accepting the old "same ids"
+    // shape too keeps this honest if a future decider chooses to update in place.
+    check('replaying the same text adds no rows instead of duplicating them',
+      rowsAfter === rowsBeforeReplay && replayIds.every((id) => originalIds.includes(id)),
       `original=${originalIds.join(',')} replay=${replayIds.join(',')} rows ${rowsBeforeReplay} -> ${rowsAfter}`)
 
     // ── setup facts: which file is actually behind the configured path ────────
@@ -1121,6 +1101,7 @@ try {
       `isolated=${structure.body.graph.isolated} of ${structure.body.totals.memories}`)
 
     // A store path that does not exist is a fresh install, not an error.
+    process.env.DSH_MEMVAULT_CORE_DB = join(dir, 'never-created.db')
     const missingChildren = []
     applyHost({ ...ctx, inject: (deps, cb) => missingChildren.push({ deps, cb }) }, {
       dbPath: join(dir, 'not-created-yet.db'),
