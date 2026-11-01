@@ -927,3 +927,33 @@ M1：抽取（HTTP）+ 结构化决策 + supersede；M2：检索（FTS + 向量 
 ### 26.4 下一步
 
 M2：检索（FTS + 向量 + RRF + 可答性守卫）+ MCP 工具 + 面板读新库。
+
+## 27. 2026-11-01：M2 —— 混合检索与可答性守卫
+
+### 27.1 做了什么
+
+- `lib/core/embed.js`：Python `LocalEmbedder` 的移植——ascii 词 + 单个 CJK 字 + CJK bigram，
+  md5 有符号哈希到 384 维并归一化。离线、确定性，作为默认嵌入。
+- `lib/core/search.js`：关键词（FTS5 bm25，≥3 字；短查询走 LIKE + bigram 重叠）+ 向量余弦，
+  **RRF（k=60）融合**；作用域/当前版本过滤；可答性守卫（数字/时间/端口）。
+- `store.saveEmbedding` / `store.vectorMap`：向量按 `(memory_id, model)` 存，换模型只加行。
+- `remember(...)` 增加可选 `embedder`：写入时顺手落向量，下一次检索即可用。
+
+### 27.2 为什么是 RRF
+
+Python 引擎实测过两件事：加权混合分不可比（`0.7×cos + 0.3×kw` 可超 1.0），以及 0.55 这样的阈值
+分不开“相关”和“能答”。RRF 只看名次，不碰绝对分，缺一路通道也不会把排序带偏——这是把那次教训
+直接写进实现，而不是再调一次权重。
+
+### 27.3 验证
+
+- 新增 8 条测试（嵌入确定性/相似度、分词、中文子串命中、两字 LIKE 兜底、双通道并入 RRF、
+  守卫拒绝无数字的数量问题、作用域与当前版本过滤、remember 落向量），全量 **26 条**，`npm test` 全绿。
+- 工具面确认：DSH 的 asar 里存在 `defineTool` / `registerTool` / `toolRegistry` / `ctx.tools`，
+  说明插件可以注册工具；下一步读签名后接 `memory_search` / `memory_add`，不靠二次安装 MCP。
+- 尚未做：JS 侧的 LLM 裁判（现在只有离线守卫，`answerable` 只会是 `false` 或 `null`）；
+  面板仍读旧库。
+
+### 27.4 下一步
+
+M2 收尾：接 DSH 工具注册（`memory_search` / `memory_add`）+ 面板改读新库；再往后 M3 退役 Python 路径。
