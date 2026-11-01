@@ -54,6 +54,25 @@ test('memory_search blanks results when nothing answers the question', async (t)
   assert.equal(out.answerable, false)
 })
 
+test('memory_search reports empty results as not answerable', async (t) => {
+  const store = openStore(t)
+  store.addMemory({ userId: 'u1', text: '用户偏好中文回答。' })
+  const [search] = buildMemoryTools(store)
+  const out = await search.execute({ query: '红烧肉怎么做', user_id: 'u1' })
+  assert.deepEqual(out.results, [])
+  assert.equal(out.answerable, false)
+  assert.match(out.note, /no matching memories/)
+})
+
+test('memory_add embeds when an embedder is wired in', async (t) => {
+  const { LocalEmbedder } = await import('../lib/core/embed.js')
+  const store = openStore(t)
+  const [, add] = buildMemoryTools(store, { embedder: new LocalEmbedder(384) })
+  const out = await add.execute({ text: '用户偏好中文回答。', user_id: 'u1' })
+  assert.equal(store.stats().embeddings, 1)
+  assert.ok(store.getMemory(out.id))
+})
+
 test('memory_add stores a memory and refuses an unscoped call', async (t) => {
   const store = openStore(t)
   const [, add] = buildMemoryTools(store)
