@@ -823,3 +823,34 @@ bundle、注入与面板路由都不依赖 rc.3 → rc.5 之间的差异。所�
   字节数 4,264,727，sha512 与本地 `npm pack`、registry 的 `dist.integrity` 三者一致。
 - **传播延迟**：packument / `dist-tags` 先更新，tarball 地址在约 3 分钟内仍回 404，之后变 200——
   与 §22.5 记录的 registry 传播特性同类，不是发布失败，不要因此重发或 `npm unpublish`。
+
+## 24. 2026-11-01：抽取一直 `added=0`（v0.9.12）
+
+### 24.1 现象
+
+面板停在 10-26。状态文件里当天的 5 次抽取：2 次 `failed: httpx.ReadTimeout`，3 次 `ok added=0`；
+库内 `max(created_at)` = `2026-10-26T15:11:36Z`。
+
+### 24.2 根因（实测，不是推断）
+
+1. **抽取只送 `user/message`，而 DSH 的 user 事件里混着机器文本**：runtime context（其中还嵌着
+   MemVault 自己注入的核心块）、checkpoint 摘要、skill catalog、`<system-reminder>`、background job
+   输出、`Time sampled` 时间戳。当天 5 个窗口里机器文本占 **32%–67%**；一个真实会话 97 条 user 消息，
+   最长的是 **20,133 字**的 skill catalog 与 **13,118 字**的 checkpoint。
+2. **真实用户回合极短**：同一会话里多为「现状」「继续做 R26」「现况，服务器docker现在有哪些」（2–55 字）。
+3. **提示词只收「用户自述的长期事实」**，所以这些窗口返回 `[]` 是**符合契约**的结果，不是抽取器坏了。
+   另有一层独立问题：`LLMExtractor` 的 HTTP 超时硬编码 60s，慢网关下会整窗失败（今天的 2 次）。
+
+### 24.3 改了什么（v0.9.12）
+
+- `renderTranscript` 在渲染 user 文本前丢弃机器前缀（runtime context / MemVault 核心块 / checkpoint /
+  system-reminder / skill catalog / background job / 时间戳 / hindsight refresh），预算与模型注意力回到
+  真人说的话上。
+- `smoke-extract` 新增 2 条：机器文本被丢、真实回合存活。
+
+### 24.4 没有改什么
+
+- 没有打开 `includeAssistant`，也没有放宽抽取提示词——那会把项目过程写进记忆，属于产品取舍。
+- 实测：把最近 8 条含助手结论的对话（4,262 字）喂给同一管线，仍返回 0 条。**所以「多送助手文本」本身
+  不解决这个问题**；要让项目结论入库，需要显式 `memory_add`（procedural）或改抽取范围与提示词。
+- 本轮手动写入 3 条 procedural 记忆（MCP 修复、发布流程、本根因），面板因此重新出现 11-01 的记录。
