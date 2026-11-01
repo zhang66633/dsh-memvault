@@ -53,9 +53,12 @@ check('formatter returns empty string for no blocks', formatCoreBlocks([]) === '
     all.length === 0 || headerOnly === headerOnly.split('\n')[0],
     `header_len=${headerOnly.length}`)
   const full = formatCoreBlocks(all, { maxChars: 4000 })
+  // A block's value may wrap onto several lines (the rules/persona blocks do),
+  // so "kept" is checked per block, not per physical line.
+  const kept = all.every((block) => full.includes(block.value.split('\n')[0].slice(0, 24)))
   check('budget: the default budget keeps every block',
-    all.length === 0 || full.split('\n').length === all.length + 1,
-    `lines=${full.split('\n').length} vs blocks=${all.length}`)
+    all.length === 0 || kept,
+    `len=${full.length} vs blocks=${all.length}`)
 }
 
 check('missing db fails soft (throws, caller catches)', (() => {
