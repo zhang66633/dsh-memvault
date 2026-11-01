@@ -67,6 +67,27 @@ check('skips non-text blocks', !rendered.includes('image'))
 check('honours the char budget', renderTranscript(events, 30).length <= 30,
   `len=${renderTranscript(events, 30).length} of 30`)
 
+// Harness-injected user-role text (runtime context, checkpoints, skill catalogs,
+// background-job reports) is not something the person wrote. Measured 2026-11-01:
+// a 2 248-char window was 67 % this material, and one transcript was a 20 k-char
+// skill catalog next to a 7-char command — extraction returned [] and the panel
+// looked frozen at an old date.
+const noisy = [
+  { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'Current runtime context. This snapshot supersedes earlier ones.'.repeat(20) }] } },
+  { seq: 2, type: 'user/message', data: { content: [{ type: 'text', text: '<system-reminder> The available skill catalog changed.'.repeat(10) }] } },
+  { seq: 3, type: 'user/message', data: { content: [{ type: 'text', text: 'background job pwsh-abc finished: exit 1'.repeat(10) }] } },
+  { seq: 4, type: 'user/message', data: { content: [{ type: 'text', text: 'This is an automatically generated checkpoint condensing an earlier span'.repeat(10) }] } },
+  { seq: 5, type: 'user/message', data: { content: [{ type: 'text', text: '继续做 R26' }] } },
+]
+const cleaned = renderTranscript(noisy, 6000)
+check('drops harness-generated user text',
+  !cleaned.includes('Current runtime context') && !cleaned.includes('system-reminder')
+  && !cleaned.includes('background job') && !cleaned.includes('automatically generated checkpoint'),
+  cleaned.includes('Current runtime context') ? 'runtime context survived' : 'noise dropped')
+check('keeps the real user turn when machine noise is dropped',
+  cleaned.trim() === '用户: 继续做 R26', JSON.stringify(cleaned))
+
+
 // ── turnSpanByBoundary (replaces the seq-window slice) ───────────────────────
 const turnEvents = [
   { seq: 0, type: 'turn/start' },
