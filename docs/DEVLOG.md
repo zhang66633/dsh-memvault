@@ -1052,3 +1052,40 @@ DSH 的 asar 里没有可读文档，但字符串里能定位到工具系统的�
 全量 `npm test` 绿（6 个 smoke + 34 条单测）。仍是“已实现、待真机验证”：需要再重启一次，
 确认 `~/.dsh/memvault/memvault.db` 出现、`memory_search` 可调用。若仍不出现，下一个怀疑对象是
 根 ctx 是否提供服务名 `tools`（届时用 `ctx.get('tools')` 做一次显式探测）。
+
+## 31. 2026-11-01：首次真机跑通 + 真实数据搬迁
+
+### 31.1 工具真机验证（重启后）
+
+- `~/.dsh/memvault/memvault.db` 出现，11 张表（含 FTS5）；运行时出现 `memory_search` / `memory_add`
+  的 schema。
+- `memory_add` 写入 `mem_6bc66f6ed74c`（history: add / manual）；`memory_search` 命中同一条
+  （score 0.0164，answerable true）。**零依赖实现成立**：没引入 `@deepseek-ai/dsh-tools`。
+
+### 31.2 真实数据搬迁
+
+`memvault export`（旧 Python 库）→ `scripts/import-core.mjs`（新库）：
+
+| 内容 | 导出 | 导入到核心库 |
+|---|---|---|
+| memories | 468 | +468（库内共 469，含一条工具测试） |
+| blocks | 6 | 6 |
+| relations | 766 | 766 |
+| history | 548 | 1017（468 条导入 add + 548 条 import 回放） |
+
+二次 dry-run `wouldAdd: 0`——按 id 幂等，重复导入不会翻倍。
+
+### 31.3 一个必须正视的发现：导入行没有向量，检索质量会退
+
+用工具在真实库上查「违规事件」：返回 5 条，但 **top-1 与查询只是部分相关**。原因不是排序坏，
+而是这批记忆**没有任何向量**（导出默认不带，导入也不重算），只剩关键词/重叠通道；469 条真实数据
+上这会明显不如旧库（旧库用 qwen3-embedding-8b 的语义检索）。
+
+所以顺序要改：**先补嵌入回填**（JS 侧加 OpenAI 兼容 embedder 批量回填，本地哈希兜底），
+再切面板；否则面板与检索在真实数据上的体验是退步的。
+
+### 31.4 状态与下一步
+
+- 新增 `scripts/import-core.mjs`（dry-run 默认，`--apply` 幂等）。
+- 下一步：① OpenAI 兼容 embedder + 回填；② 抽取路径切到核心库（需要把 LLM 端点/密钥从
+  `extract.env` 接进 JS 核心）；③ 面板读核心库。三件事一起做才不会有“两个库各写一半”的过渡期。
