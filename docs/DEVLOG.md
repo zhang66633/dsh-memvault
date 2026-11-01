@@ -1089,3 +1089,37 @@ DSH 的 asar 里没有可读文档，但字符串里能定位到工具系统的�
 - 新增 `scripts/import-core.mjs`（dry-run 默认，`--apply` 幂等）。
 - 下一步：① OpenAI 兼容 embedder + 回填；② 抽取路径切到核心库（需要把 LLM 端点/密钥从
   `extract.env` 接进 JS 核心）；③ 面板读核心库。三件事一起做才不会有“两个库各写一半”的过渡期。
+
+## 32. 2026-11-01：嵌入回填 —— 迁移的最后一块
+
+### 32.1 做了什么
+
+- `lib/core/embed.js`：新增 `OpenAIEmbedder`（`/embeddings`、按 `index` 排序、归一化）；两个
+  embedder 统一为 **async** 接口——网络嵌入本来就是异步的，让离线那个也返回 Promise，
+  调用方就不需要“这个不会等”的特例。`searchMemories` 因此变成 async，调用方都已 await。
+- `lib/core/env.js`：`resolveEmbedder()` 读项目 `.env`（真实环境变量优先，与 Python 的
+  `load_dotenv` 一致）：有 `OPENAI_API_KEY` 就用 OpenAI 兼容端点，否则用本地哈希。
+  **同一份 `.env`，不发明第二套配置。**
+- `lib/core/backfill.js` + `scripts/backfill-core.mjs`：只挑“该模型没有向量”的行，按批嵌入，
+  中断可续跑；默认 dry-run（报告缺少多少行，不花一次嵌入调用）。
+- 检索对**网络失败降级**：向量通道抛错时只保留关键词通道，不把异常抛给模型。
+- `host.js` / `index.js`：工具接线时按 `extract.projectDir` 解析 embedder。
+
+### 32.2 真机结果
+
+- 回填：`openai/qwen3-embedding-8b`，**469 条全部完成**（15 批），`embeddings: 469`。
+- 混合检索 vs 纯关键词（真实 469 条库，抽样）：
+
+| 查询 | 纯关键词 top-1 | 混合 top-1 |
+|---|---|---|
+| 抽取消音 | 一条不相关的插件架构记忆 | 「added=0 根因」✓ |
+| MCP 连接断开 | 一条运行时描述 | 「MemVault MCP 修复」✓ |
+| cordis 事件总线 | 命中的同一条 | 同一条（且第 2 条是 cordis 插件体系）✓ |
+| 违规事件 | added=0 根因 | 语义上更接近“违规”的记忆（库里没有 violation_events 那条）|
+
+结论：语义通道在真实数据上确实把“相关但词面不同”的记忆拉了回来。
+
+### 32.3 状态与下一步
+
+全量 `npm test` 绿（6 smoke + 42 单测）。工具在**下一次重启**后才会用上 OpenAI embedder
+（当前进程加载的是旧代码）。剩余：抽取路径切核心库 + 面板读核心库，两者一起做。
