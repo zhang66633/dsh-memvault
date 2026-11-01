@@ -449,10 +449,11 @@ try {
     injected.includes('[user/lenovo/human]') && injected.includes('[agent/claude-code-memory/role]')
     && injected.startsWith('MemVault core memory'),
     `${injected.length} chars`)
+  const webChild = children.find((child) => child.deps.join(',') === 'webServer')
   check('the webServer child plugin is requested, not required',
-    children.length === 1 && children[0].deps.join(',') === 'webServer', JSON.stringify(children.map((c) => c.deps)))
+    Boolean(webChild), JSON.stringify(children.map((c) => c.deps)))
 
-  children[0].callback(childCtx)
+  webChild.callback(childCtx)
   check('all ten exact routes are registered',
     routes.has(STATUS_PATH) && routes.has(REFRESH_PATH) && routes.has(BLOCKS_PATH)
     && routes.has(FLUSH_PATH) && routes.has(MEMORIES_PATH) && routes.has(MEMORY_PATH)

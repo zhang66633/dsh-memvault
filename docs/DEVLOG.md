@@ -1011,3 +1011,44 @@ DSH 的 asar 里没有可读文档，但字符串里能定位到工具系统的�
 ### 29.3 下一步
 
 真机验证工具 → 面板改读新库 → M3 退役 Python 路径。
+
+## 30. 2026-11-01：工具接线的真因与去依赖修复
+
+### 30.1 重启后没有库：不是注册逻辑，是模块解析
+
+重启（第一版接线）后 `~/.dsh/memvault/memvault.db` 不存在。先排除代码路径，直接验证解析：
+
+- 在插件目录里用 Electron-as-Node 试 `import('@deepseek-ai/dsh-tools')` 与 `import('@deepseek-ai/schemastery')`，
+  **两个都失败**（`Cannot find package … imported from D:\_Projects\skill_mcp\dsh-memvault`）。
+- 结论：插件跑在自己的目录里，peer 包**不会**被宿主注入解析；`dynamic import` 失败 → 走 `warnOnce`
+  → 不打开库、不注册工具。这也解释了为什么 `schemastery` 的 Config schema 一直“可选”。
+
+### 30.2 试过依赖，最后决定不要依赖
+
+临时 `npm install @deepseek-ai/dsh-tools@0.2.1-rc.5` 后，用真 `defineTool` 探测，连续暴露两处 DSL 约束：
+
+1. `parameters.limit.minimum` 不被支持（DSL 只认 type/description/required/enum 等）；
+2. object schema **必须显式** `additionalProperties`，且 `items: { type: 'json' }` 也不合法。
+
+修好 schema 后 `buildMemoryTools` 通过。但这会给插件加上一个运行时依赖，与
+“零运行时依赖”的打包断言冲突（`smoke-package.mjs` 直接拦下）。于是读了装好的 0.2.1-rc.5 源码：
+
+- `ToolRuntime.register(definition)` 只校验 `output { schema, render }`（`assertSupportedJsonSchema`）与
+  `timeoutMs`/保留名，**不要求** definition 来自 `defineTool`；
+- `parameters` 是 JSON Schema，工具 SDK 渲染走 `jsonSchemaToTs`。
+
+因此改为**手写 definition**，删掉依赖与动态 import：插件仍是零依赖，失败模式也少了一个。
+手写 schema 已用运行时自己的 `assertSupportedJsonSchema` / `jsonSchemaToTs` 验证通过。
+
+### 30.3 顺手修掉的两个真 bug
+
+- `lib/core/tools.js` 里一句中文示例被 PowerShell 5.1 按系统代码页重写成了乱码（`Get-Content -Raw` +
+  `Set-Content -Encoding UTF8` 的坑）。已用 Node 重写并复查，文件里无残留乱码。
+- `smoke-panel.mjs` 断言 `apply()` 只请求一个子插件；现在还会请求 `tools`，断言改为按名字找
+  `webServer`，其余 smoke 行为不变。
+
+### 30.4 状态
+
+全量 `npm test` 绿（6 个 smoke + 34 条单测）。仍是“已实现、待真机验证”：需要再重启一次，
+确认 `~/.dsh/memvault/memvault.db` 出现、`memory_search` 可调用。若仍不出现，下一个怀疑对象是
+根 ctx 是否提供服务名 `tools`（届时用 `ctx.get('tools')` 做一次显式探测）。
