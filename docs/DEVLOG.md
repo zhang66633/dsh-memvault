@@ -815,6 +815,11 @@ bundle、注入与面板路由都不依赖 rc.3 → rc.5 之间的差异。所�
 - `package.json` 0.9.10 → 0.9.11；两版 README 的版本徽章与安装行同步。
 - README 兼容性表：实测宿主 `0.2.1-rc.3` → `0.2.1-rc.5`（中英各一处；严格判定器的示例同步）。
 
-### 23.4 未做
+### 23.4 发版记录（2026-11-01）
 
-- **没有 `npm publish`**：发版是对外承诺，等确认后再跑；发布物自检流程见 §22.5。
+- **`npm publish --registry https://registry.npmjs.org --access public`**，账号 `zheexinn`，
+  发布 `dsh-memvault@0.9.11`；`dist-tags.latest` 在约 50 秒后变为 `0.9.11`。
+- **发布物自检**（§22.5 的流程）：从 registry 拉下 tgz 解包后跑 `node scripts/smoke-package.mjs` → ALL PASS；
+  字节数 4,264,727，sha512 与本地 `npm pack`、registry 的 `dist.integrity` 三者一致。
+- **传播延迟**：packument / `dist-tags` 先更新，tarball 地址在约 3 分钟内仍回 404，之后变 200——
+  与 §22.5 记录的 registry 传播特性同类，不是发布失败，不要因此重发或 `npm unpublish`。
