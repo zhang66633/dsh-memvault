@@ -1,0 +1,74 @@
+{
+  "format": "memvault-export",
+  "version": 1,
+  "source": { "path": "data/memvault.db" },
+  "tables": {},
+  "stats": { "memories": 3, "blocks": 1, "history": 2, "relations": 1 },
+  "counts": { "with_vectors": false },
+  "memories": [
+    {
+      "id": "mem_aaaa1111",
+      "user_id": "u1",
+      "agent_id": null,
+      "run_id": null,
+      "memory": "用户在 SJS 项目里用 Postgres 的 violation_events 表存违规事件。",
+      "memory_type": "user",
+      "metadata": { "source": "extract" },
+      "created_at": "2026-09-01T10:00:00+00:00",
+      "updated_at": "2026-09-01T10:00:00+00:00"
+    },
+    {
+      "id": "mem_bbbb2222",
+      "user_id": "u1",
+      "agent_id": null,
+      "run_id": null,
+      "memory": "SJS 的周更链路每天 02:00 跑一次，失败即停。",
+      "memory_type": "user",
+      "metadata": {},
+      "created_at": "2026-09-02T10:00:00+00:00",
+      "updated_at": "2026-09-02T10:00:00+00:00"
+    },
+    {
+      "id": "mem_cccc3333",
+      "user_id": "u1",
+      "agent_id": null,
+      "run_id": null,
+      "memory": "用户偏好中文回答，结论先行。",
+      "memory_type": "procedural",
+      "metadata": { "source": "extract" },
+      "created_at": "2026-09-03T10:00:00+00:00",
+      "updated_at": "2026-09-03T10:00:00+00:00"
+    }
+  ],
+  "blocks": [
+    {
+      "scope_type": "user",
+      "scope_id": "u1",
+      "label": "persona",
+      "value": "直接给结论",
+      "value_limit": 2000,
+      "position": 0,
+      "created_at": "2026-09-01T10:00:00+00:00",
+      "updated_at": "2026-09-01T10:00:00+00:00"
+    }
+  ],
+  "history": [
+    {
+      "memory_id": "mem_aaaa1111",
+      "action": "ADD",
+      "old_memory": null,
+      "new_memory": "用户在 SJS 项目里用 Postgres 的 violation_events 表存违规事件。",
+      "changed_at": "2026-09-01T10:00:00+00:00"
+    },
+    {
+      "memory_id": "mem_aaaa1111",
+      "action": "UPDATE",
+      "old_memory": "用户用 Postgres 存违规事件。",
+      "new_memory": "用户在 SJS 项目里用 Postgres 的 violation_events 表存违规事件。",
+      "changed_at": "2026-09-02T10:00:00+00:00"
+    }
+  ],
+  "relations": [
+    { "source_id": "mem_aaaa1111", "target_id": "mem_bbbb2222", "weight": 0.71 }
+  ]
+}

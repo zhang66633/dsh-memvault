@@ -2,7 +2,7 @@
 
 > 目标：Python 引擎退役后，插件自带**存储、抽取、检索**三件事，装一个插件即完整功能。
 > 旧库 `data/memvault.db` 导出成 JSON 后归档，新库按本文结构重建。
-> 状态：**设计稿**，尚未实现。
+> 状态：**M0 已实现**（`lib/core/`，测试 `test/core.test.mjs`）；M1 起待做。
 
 ## 1. 约束（本机实测，不是假设）
 
@@ -169,7 +169,10 @@ CREATE TABLE relations (
 
 CREATE TABLE history (
   id        INTEGER PRIMARY KEY,
-  memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  -- No foreign key on purpose: the audit trail must outlive the memory it is
+  -- about, or a delete erases its own record (the real export carries history
+  -- rows whose memory was deleted in the old store).
+  memory_id TEXT NOT NULL,
   action    TEXT NOT NULL
             CHECK (action IN ('add','update','supersede','delete','import')),
   old_text  TEXT,

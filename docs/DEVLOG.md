@@ -861,3 +861,36 @@ bundle、注入与面板路由都不依赖 rc.3 → rc.5 之间的差异。所�
   `dist-tags.latest` 约 3 分钟后变为 `0.9.12`。
 - 发布物自检：registry 的 tgz 解包后 `node scripts/smoke-package.mjs` → ALL PASS；
   4,267,121 字节，sha512 与本地 `npm pack` 一致。
+
+## 25. 2026-11-01：M0 —— 新内核的 store 与导入器
+
+**为什么先做这个**：Python 引擎退役后插件要自带存储；先把“数据能原样进新库”钉死，再谈抽取与检索。
+旧库 schema 不继承（已定：旧库用完即弃，只保留新库）。
+
+### 25.1 做了什么
+
+- `lib/core/schema.js`：新 schema（memories / memory_embeddings / blocks / relations / history / flags /
+  FTS5 trigram），SQL 与 `docs/CORE-DESIGN.md` 一致。
+- `lib/core/store.js`：`CoreStore` —— add / supersede / current / blocks / relations / history / flags / stats。
+  写入**从不原地改文本**：`supersede()` 插新行，旧行 `superseded_by` 指向它，历史因此可回放。
+- `lib/core/importers.js`：四个导入器（memvault-export / mcp-memory / basic-memory / mem0），保留 id、
+  scope、时间戳与来源；没有 id 的外部来源用 `sha1(scope+text)` 生成稳定 id，重复导入会跳过。
+- `test/core.test.mjs`：9 条测试；`npm run test:core`，并接进 `npm test` 链。
+
+### 25.2 实测（真实导出 → 新库）
+
+把 `data/memvault.db` 的导出（468 条记忆 / 6 块 / 548 历史 / 766 关系）导入新库：
+
+- added 468、blocks 6、relations 766、history 548；记忆/块/关系条数**全部一致**；
+- 抽样记忆的文本与 `created_at`（`2026-09-14T12:23:50+00:00`）一致。
+
+### 25.3 被真实数据推翻的一处设计
+
+`history.memory_id` 原本写了 `REFERENCES memories(id) ON DELETE CASCADE`。真实导出里有
+**记忆已删除、history 仍保留**的行——第一次跑就 `FOREIGN KEY constraint failed`。
+结论：**审计必须比它记录的对象活得久**，history 不能挂外键（schema 与设计文档都已改）。
+这也是“拿真库跑，而不是只跑构造 fixture”的价值。
+
+### 25.4 下一步
+
+M1：抽取（HTTP）+ 结构化决策 + supersede；M2：检索（FTS + 向量 + RRF + 可答性守卫）+ MCP 工具。

@@ -1,0 +1,3 @@
+{"type":"entity","name":"Alice","entityType":"person","observations":["Alice works at TechCorp.","Alice prefers async updates."]}
+{"type":"entity","name":"TechCorp","entityType":"company","observations":["TechCorp is a company."]}
+{"type":"relation","from":"Alice","to":"TechCorp","relationType":"works_at"}
