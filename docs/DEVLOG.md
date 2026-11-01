@@ -791,3 +791,30 @@ npm/pnpm 说"不满足"。同一份声明，两个答案——这就是要消掉
   `/dsh-market/discovery-compatibility` 传 `dsh-memvault`，返回 `compatible`，`declarations` 就是 §22.2 那一条区间。
 - 一个 registry 细节：新包发布时 packument 里会短暂出现 `0.0.0-stage`（比正式版本早 66 秒的占位条目），
   `dist-tags.latest` 不受影响；不要去 `npm unpublish` 它。
+
+## 23. 0.2.1-rc.5 适配（v0.9.11，2026-11-01）
+
+### 23.1 为什么只升补丁
+
+宿主从 `0.2.1-rc.3` 升到 `0.2.1-rc.5`，但插件侧没有运行时改动：`engines.dsh` 与两条 DSH peer 的
+`>=0.2.1-0 <0.3.0-0` 区间本来就覆盖整条 0.2.1 预发布线（§22 已把严格 SemVer 的洞补齐），
+bundle、注入与面板路由都不依赖 rc.3 → rc.5 之间的差异。所以这是一次**实测后的声明更新**，不是行为变更。
+
+### 23.2 在 0.2.1-rc.5 上实测（规则 ③）
+
+1. **活宿主**：桌面端 `0.2.1-rc.5`，保留 `desktop` profile。`/memvault/api/status` 回 **200**；
+   返回里 `read.enabled=true`、`blocks=3`、`configIssues` 为空，六项路径自检（python / projectDir / db /
+   state / 服务端库 / 服务端嵌入器）全部 ok。
+2. **注入**：本会话 system prompt 的 runtime 上下文里有 `memvault:core`，内容与 `status` 返回的三块一致。
+3. **`npm test`**：六个 smoke 全绿（package / config / 主流程 / extract / panel / panel-routes）。
+4. **面板**：浏览器半边没有在本轮重新截图取证。裸访问 `/plugins/<包名>/client.js` 是 404 属于设计要求
+   （§22.4 教训 20），host 侧路由已证，客户端能力由构建产物契约测试覆盖。
+
+### 23.3 改了哪些字
+
+- `package.json` 0.9.10 → 0.9.11；两版 README 的版本徽章与安装行同步。
+- README 兼容性表：实测宿主 `0.2.1-rc.3` → `0.2.1-rc.5`（中英各一处；严格判定器的示例同步）。
+
+### 23.4 未做
+
+- **没有 `npm publish`**：发版是对外承诺，等确认后再跑；发布物自检流程见 §22.5。
