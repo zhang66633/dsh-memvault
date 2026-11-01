@@ -13,8 +13,6 @@ import { join } from 'node:path'
 
 import { attachMemoryTools } from '../lib/core/host.js'
 
-const identity = (options) => options
-
 function fakeContext() {
   const state = { injected: [], cleanup: null, disposers: [], registered: [] }
   const ctx = {
@@ -57,7 +55,6 @@ test('registers memory_search and memory_add when the tool service exists', (t) 
   const warnings = []
   attachMemoryTools(ctx, {
     storePath: join(dir, 'core.db'),
-    defineTool: identity,
     logger: { warn: (...args) => warnings.push(args), info: () => {} },
   })
   assert.deepEqual(state.injected, [['tools']])
@@ -69,7 +66,7 @@ test('registers memory_search and memory_add when the tool service exists', (t) 
 test('the effect disposer unregisters the tools', (t) => {
   const { ctx, state } = fakeContext()
   const dir = tempDir(t, state)
-  attachMemoryTools(ctx, { storePath: join(dir, 'core.db'), defineTool: identity })
+  attachMemoryTools(ctx, { storePath: join(dir, 'core.db') })
   state.cleanup()
   assert.deepEqual(state.disposers, ['memory_search', 'memory_add'])
 })
@@ -83,7 +80,6 @@ test('a store that cannot be opened logs instead of throwing', (t) => {
   const warnings = []
   attachMemoryTools(ctx, {
     storePath: join(blocker, 'nested', 'core.db'),
-    defineTool: identity,
     logger: { warn: (...args) => warnings.push(args), info: () => {} },
   })
   assert.equal(state.registered.length, 0)

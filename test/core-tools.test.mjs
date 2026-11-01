@@ -16,8 +16,6 @@ import { join } from 'node:path'
 import { CoreStore } from '../lib/core/store.js'
 import { buildMemoryTools, registerMemoryTools } from '../lib/core/tools.js'
 
-const identity = (options) => options
-
 function openStore(t) {
   const dir = mkdtempSync(join(tmpdir(), 'memvault-tools-'))
   const store = new CoreStore(join(dir, 'memvault.db'))
@@ -30,18 +28,18 @@ function openStore(t) {
 
 test('builds memory_search and memory_add with required parameters', (t) => {
   const store = openStore(t)
-  const [search, add] = buildMemoryTools(store, identity)
+  const [search, add] = buildMemoryTools(store)
   assert.equal(search.name, 'memory_search')
-  assert.equal(search.parameters.query.required, true)
+  assert.deepEqual(search.parameters.required, ['query'])
   assert.equal(add.name, 'memory_add')
-  assert.equal(add.parameters.text.required, true)
+  assert.deepEqual(add.parameters.required, ['text'])
   assert.equal(search.output.render({}, { results: [] })[0].type, 'text')
 })
 
 test('memory_search executes against the store', async (t) => {
   const store = openStore(t)
   store.addMemory({ userId: 'u1', text: '用户在 SJS 项目里用 Postgres 存违规事件。' })
-  const [search] = buildMemoryTools(store, identity)
+  const [search] = buildMemoryTools(store)
   const out = await search.execute({ query: '违规事件', user_id: 'u1' })
   assert.equal(out.results[0].text, '用户在 SJS 项目里用 Postgres 存违规事件。')
   assert.equal(out.answerable, true)
@@ -50,7 +48,7 @@ test('memory_search executes against the store', async (t) => {
 test('memory_search blanks results when nothing answers the question', async (t) => {
   const store = openStore(t)
   store.addMemory({ userId: 'u1', text: '用户在 SJS 项目里用 Postgres 存违规事件。' })
-  const [search] = buildMemoryTools(store, identity)
+  const [search] = buildMemoryTools(store)
   const out = await search.execute({ query: '违规事件表有多少行', user_id: 'u1' })
   assert.deepEqual(out.results, [])
   assert.equal(out.answerable, false)
@@ -58,7 +56,7 @@ test('memory_search blanks results when nothing answers the question', async (t)
 
 test('memory_add stores a memory and refuses an unscoped call', async (t) => {
   const store = openStore(t)
-  const [, add] = buildMemoryTools(store, identity)
+  const [, add] = buildMemoryTools(store)
   const out = await add.execute({ text: '用户偏好中文回答。', user_id: 'u1' })
   assert.equal(store.getMemory(out.id).text, '用户偏好中文回答。')
   await assert.rejects(() => add.execute({ text: '没有作用域' }), /scope/)
@@ -75,7 +73,7 @@ test('registerMemoryTools registers both and disposes them', (t) => {
       },
     },
   }
-  const dispose = registerMemoryTools(ctx, { store, defineTool: identity })
+  const dispose = registerMemoryTools(ctx, { store })
   assert.deepEqual(events, ['register:memory_search', 'register:memory_add'])
   dispose()
   assert.deepEqual(events, [
