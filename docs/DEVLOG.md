@@ -957,3 +957,34 @@ Python 引擎实测过两件事：加权混合分不可比（`0.7×cos + 0.3×kw
 ### 27.4 下一步
 
 M2 收尾：接 DSH 工具注册（`memory_search` / `memory_add`）+ 面板改读新库；再往后 M3 退役 Python 路径。
+
+## 28. 2026-11-01：工具定义（M2 收尾之一）
+
+### 28.1 从运行时里挖出来的真实 API
+
+DSH 的 asar 里没有可读文档，但字符串里能定位到工具系统的形状（**不是猜的**）：
+
+- `ctx.tools.register(tool)` 注册、返回 disposer；`inject = ['tools']` 才拿得到服务。
+- `defineTool({ name, description, parameters, output, execute })`，来自 `@deepseek-ai/dsh-tools`；
+  `output` 必须给 `{ schema, render }`，官方样例的写法是
+  `render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }]`。
+- 参数是 DSL：`{ query: { type: 'string', required: true, description } }`，不是裸 JSON Schema。
+
+### 28.2 做了什么
+
+`lib/core/tools.js`：`buildMemoryTools(store, defineTool, { embedder })` 产出两个工具，
+`registerMemoryTools(ctx, {...})` 注册并返回一个总 disposer。
+
+- `memory_search`：query/limit/scope → `searchMemories`；`answerable === false` 时**返回空结果**，不让模型把最近几行当答案。
+- `memory_add`：text/type/scope/metadata → `store.addMemory`；**无 scope 直接抛错**，不把记忆挂到隐式身份上。
+- `defineTool` 作为参数注入：真实现来自运行时，测试传恒等函数，断言的是本插件拥有的契约（名字、必填参数、执行落到 store、disposer）。
+
+### 28.3 验证
+
+新增 5 条测试（构造/执行/无答案清空/无 scope 报错/注册与释放），全量 **31 条**。
+
+### 28.4 为什么还没接进 `apply`
+
+接线要回答三件事，否则会做成半成品：核心库放哪、何时打开（`ctx.effect` 关闭）、以及
+`@deepseek-ai/dsh-tools` 在插件沙箱里能否解析到（它只在运行时里，普通 Node 进程验证不了）。
+这三件在 `apply` 里落下去就无法只靠 smoke 证明；下一步单独做，并在 DSH 里实际调用一次工具。
