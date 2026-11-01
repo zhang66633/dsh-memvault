@@ -63,6 +63,29 @@ test('registers memory_search and memory_add when the tool service exists', (t) 
   assert.deepEqual(warnings, [])
 })
 
+test('registers through a context that exposes the service directly', (t) => {
+  const state = { cleanup: null, registered: [], disposers: [] }
+  const tools = {
+    register(tool) {
+      state.registered.push(tool.name)
+      return () => state.disposers.push(tool.name)
+    },
+  }
+  const ctx = {
+    get(name) {
+      return name === 'tools' ? tools : undefined
+    },
+    effect(fn) {
+      state.cleanup = fn()
+    },
+  }
+  const dir = tempDir(t, state)
+  attachMemoryTools(ctx, { storePath: join(dir, 'core.db') })
+  assert.deepEqual(state.registered, ['memory_search', 'memory_add'])
+  state.cleanup()
+  assert.deepEqual(state.disposers, ['memory_search', 'memory_add'])
+})
+
 test('the effect disposer unregisters the tools', (t) => {
   const { ctx, state } = fakeContext()
   const dir = tempDir(t, state)
