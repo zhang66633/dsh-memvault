@@ -988,3 +988,26 @@ DSH 的 asar 里没有可读文档，但字符串里能定位到工具系统的�
 接线要回答三件事，否则会做成半成品：核心库放哪、何时打开（`ctx.effect` 关闭）、以及
 `@deepseek-ai/dsh-tools` 在插件沙箱里能否解析到（它只在运行时里，普通 Node 进程验证不了）。
 这三件在 `apply` 里落下去就无法只靠 smoke 证明；下一步单独做，并在 DSH 里实际调用一次工具。
+
+## 29. 2026-11-01：把工具接进插件（M2 收尾）
+
+### 29.1 做了什么
+
+- `lib/core/host.js`：`attachMemoryTools(ctx, { storePath, defineTool })`——
+  只在 `ctx.inject(['tools'], …)` 触发时打开核心库（默认 `~/.dsh/memvault/memvault.db`，
+  可用 `DSH_MEMVAULT_CORE_DB` 覆盖），在 effect 的清理里注销工具并关闭库；
+  打不开库只 warn，不拖垮注入/抽取。
+- `lib/index.js`：底部新增一小节，**动态** `import('@deepseek-ai/dsh-tools')`，成功后接线，
+  失败 `warnOnce` 并保持原样——插件退化成“没有工具”，而不是“坏掉”。
+  另加 `ctx.effect` 记录卸载标志，避免 import 在插件卸载后才 resolve 又去注册。
+
+### 29.2 验证
+
+- 新增 3 条测试（注册、释放、库打不开只告警），全量 **34 条**；`node --check` 与
+  `import('./lib/index.js')` 在普通 Node 下都能过（动态 import 不拖累模块加载）。
+- **仍缺一步**：`@deepseek-ai/dsh-tools` 能否在 DSH 运行时里解析到，只能在 DSH 内验证。
+  需要重启桌面端后实际调用一次 `memory_search`；在此之前，工具注册属于“已实现、未真机验证”。
+
+### 29.3 下一步
+
+真机验证工具 → 面板改读新库 → M3 退役 Python 路径。
