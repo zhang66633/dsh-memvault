@@ -1350,3 +1350,11 @@ replay 验证暴露的盲区：三次 replay 都是 `ok added=0`，但同一段�
 
 这条改动的价值不在“修 bug”，而在**下一次同类问题时诊断能自己说出原因**——这正是 42 节开头那次
 replay 里缺失的信息。
+## 43. 2026-11-02：状态栏里的库路径改回真实的那份
+
+写 README 时核对配置发现：`/memvault/api/status` 的 `read.dbPath` 还在返回 `settings.dbPath`
+（旧 Python 库路径），而面板「存储与注入」卡的「库文件」就显示它。实际读写的却是
+`~/.dsh/memvault/memvault.db`。同一屏两个路径、只有一个是真的——正是这次迁移要消灭的那类问题。
+
+修法：`read.dbPath` 一律取 `coreDbPath`；读取失败的警告文案也用它；`settings.dbPath` 从代码里
+彻底移除（配置键仍被接受，只是不再读取）。
