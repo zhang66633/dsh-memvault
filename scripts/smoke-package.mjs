@@ -170,7 +170,6 @@ check('the built bundle keeps the path map behind one toggle',
 // machine:
 //   lib/config.js      the discovery *candidates* (searched, never assumed)
 //   lib/blocks.js      the documented fallback for a direct readCoreBlocks call
-//   lib/index.js       a comment about Windows path normalisation
 //   cordis.patch.yml   the shipped example configuration, annotated as such
 //
 // The pattern requires a non-alphanumeric (or the start) before the letter: the first
@@ -180,7 +179,7 @@ check('the path guard does not mistake a URL scheme for a drive letter',
   !DRIVE_PATH.test('http://localhost') && !DRIVE_PATH.test('https://example.com/x')
   && DRIVE_PATH.test('D:/x') && DRIVE_PATH.test("'C:\\Users\\x'"))
 
-const ALLOWED_ABSOLUTE_PATH_FILES = ['lib/config.js', 'lib/blocks.js', 'lib/index.js', 'cordis.patch.yml']
+const ALLOWED_ABSOLUTE_PATH_FILES = ['lib/config.js', 'lib/blocks.js', 'cordis.patch.yml']
 const SOURCE_FILES = [
   'lib/config.js', 'lib/blocks.js', 'lib/index.js', 'lib/panel.js',
   'lib/structure.js', 'lib/extract.js', 'lib/window.js', 'lib/flags.js',
