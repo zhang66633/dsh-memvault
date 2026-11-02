@@ -1333,3 +1333,20 @@ pipeline，replay 传进来的 `MEMVAULT_EXTRACTOR=rule` 被完全忽略**——
 
 单测 46 条（新增一条：有 key 时 `MEMVAULT_EXTRACTOR=rule` 仍然强制规则；无 key 时 `llm` 退回规则）。
 真机验证需要重启一次，然后重跑同一条 replay，期望 `[rule] ok added=1`，库里出现 `origin='extract'`。
+## 42. 2026-11-02：LLM 返回不可解析时不再伪装成“没有事实”
+
+replay 验证暴露的盲区：三次 replay 都是 `ok added=0`，但同一段文本在新进程里直接调模型能稳定抽出事实。
+`parseFacts` 是全宽容解析——找不到 JSON 数组就返回 `[]`，于是“模型答了废话”“模型答了空串”
+“模型正确回答 `[]`”三种情况在诊断里长得一模一样。
+
+改法：
+
+- 新增 `parseFactsStrict`：空串 → `[]`（沉默是合法的“没有可存的事实”）；有内容但不是字符串数组 →
+  **抛错**，消息里带截断后的原文（120 字），诊断因此显示
+  `[llm] failed: Error: the model did not return a JSON array: …`。
+- `LLMExtractor` 改用严格版；宽容版保留（单元测试仍覆盖它，外部调用方不受影响）。
+- 新增单测：prose 抛错、空串返回 `[]`、`[]` 返回 `[]`、围栏 JSON 正常解析、抽取器抛错时窗口记 failed
+  而不是崩溃。全量 48 条通过。
+
+这条改动的价值不在“修 bug”，而在**下一次同类问题时诊断能自己说出原因**——这正是 42 节开头那次
+replay 里缺失的信息。

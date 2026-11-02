@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { CoreStore } from '../lib/core/store.js'
-import { RuleExtractor } from '../lib/core/extract.js'
+import { LLMExtractor, RuleExtractor, parseFactsStrict } from '../lib/core/extract.js'
 import { LocalEmbedder } from '../lib/core/embed.js'
 import { runCoreExtraction, buildPipeline, resolvePipeline } from '../lib/core/pipeline.js'
 
@@ -75,4 +75,35 @@ test('a per-call override beats the pipeline the plugin built at startup', () =>
   assert.equal(inherited.usesModel, true)
   const withoutKey = resolvePipeline({ baseEnv: {}, overrides: { MEMVAULT_EXTRACTOR: 'llm' } })
   assert.equal(withoutKey.usesModel, false)
+})
+
+test('an unreadable model answer fails loudly instead of meaning "no facts"', async () => {
+  const asProse = { complete: async () => '没有可以提取的事实。' }
+  await assert.rejects(() => new LLMExtractor(asProse).extract([{ role: 'user', content: 'x' }]),
+    /did not return a JSON array/)
+
+  const asSilence = { complete: async () => '' }
+  assert.deepEqual(await new LLMExtractor(asSilence).extract([{ role: 'user', content: 'x' }]), [])
+
+  const asEmptyArray = { complete: async () => '[]' }
+  assert.deepEqual(await new LLMExtractor(asEmptyArray).extract([{ role: 'user', content: 'x' }]), [])
+
+  const fence = String.fromCharCode(96, 96, 96)
+  const fenced = { complete: async () => `${fence}json\n["用户偏好中文"]\n${fence}` }
+  assert.deepEqual(await new LLMExtractor(fenced).extract([{ role: 'user', content: 'x' }]), ['用户偏好中文'])
+
+  assert.throws(() => parseFactsStrict('{"facts":"none"}'), /did not return a JSON array/)
+})
+
+test('a throwing extractor is reported as a failed window, not a crash', async (t) => {
+  const store = openStore(t)
+  const broken = { extract: async () => { throw new Error('the model did not return a JSON array: nope') } }
+  const result = await runCoreExtraction({
+    store,
+    extractor: broken,
+    scope: { userId: 'u1' },
+    messages: [{ role: 'user', content: 'x' }],
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /did not return a JSON array/)
 })
