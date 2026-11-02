@@ -61,7 +61,7 @@ dsh plugin --profile desktop add dsh-memvault
 | `extract.projectDir` / `env` | 仓库路径 / `{}`（`.env` 从哪读） |
 | `panel.writes` | `true` |
 
-`dbPath` 与 `extract.pythonPath` 仍被接受但不再使用。管线读的还是那套 `.env`（`OPENAI_*`、`MEMVAULT_EXTRACTOR=rule|llm`、`MEMVAULT_EMBEDDER=local|openai`）。
+`dbPath` 与 `extract.pythonPath` 仍被接受但不再使用。管线读的还是那套 `.env`（`OPENAI_*`、`MEMVAULT_EXTRACTOR=rule|llm`、`MEMVAULT_EMBEDDER=local|openai`、`MEMVAULT_ADJUDICATOR=off`）。
 
 ## 🗄️ 存储与迁移
 

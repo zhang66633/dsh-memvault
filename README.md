@@ -61,7 +61,7 @@ Self-owned install links a checkout in the profile's `package.json` (`dsh-memvau
 | `extract.projectDir` / `env` | checkout path / `{}` (where `.env` is read) |
 | `panel.writes` | `true` |
 
-`dbPath` and `extract.pythonPath` are accepted but unused. The pipeline reads the usual `.env` keys (`OPENAI_*`, `MEMVAULT_EXTRACTOR=rule|llm`, `MEMVAULT_EMBEDDER=local|openai`).
+`dbPath` and `extract.pythonPath` are accepted but unused. The pipeline reads the usual `.env` keys (`OPENAI_*`, `MEMVAULT_EXTRACTOR=rule|llm`, `MEMVAULT_EMBEDDER=local|openai`, `MEMVAULT_ADJUDICATOR=off`).
 
 ## 🗄️ Store & migration
 
