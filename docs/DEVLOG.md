@@ -1165,3 +1165,28 @@ DSH 的 asar 里没有可读文档，但字符串里能定位到工具系统的�
 
 `npm test` 全绿：6 个 smoke + 42 条单测。下一步只剩真机验证（重启后确认抽取写进核心库、
 面板读的是同一个库、tools 与面板看到同一批记忆）。
+## 34. 2026-11-02：删除 Python 传输层
+
+主流程切到核心库后，这些模块只剩测试引用，已删除：
+
+| 删除 | 原来做什么 | 现在由谁负责 |
+|---|---|---|
+| `lib/cli.js` | spawn `python -m memvault.cli` | 无（插件里不再有 Python 子进程） |
+| `lib/reindex.js` | spawn CLI `reindex` | `core/backfill.js` |
+| `lib/blocks-write.js` | 校验 + CLI argv 构造 | 校验搬进 `core/block-write.js`，argv 随 CLI 一起消失 |
+| `lib/memories.js` | 旧 schema 的 browse/provenance 读取 | `core/panel-read.js`（连同 `shapeMemoryRow` 等展示契约） |
+
+`lib/extract.js` 里的 `runExtraction` / `buildAddInvocation` 与 `runCli` 依赖一并删除；
+`shapeProduced` 保留（核心 pipeline 用它把写入结果记进诊断）。
+
+`package.json` 去掉了 `./memories` 导出（内部模块，随实现一起消失）；版本仍是 0.9.12。
+
+### 34.1 测试同步
+
+- `smoke-extract`：端到端改为 `runCoreExtraction` + 临时 `CoreStore`，断言 `text` 列与
+  `memory_embeddings`（不再有 `memories.embedding` 列）。
+- `smoke-package`：删除 `runReindex` 检查；绝对路径守卫的文件清单换成核心模块。
+- `smoke-panel`：删掉 CLI argv 与旧 query builder 的检查，`validateBlockAction` 改从
+  `core/block-write.js` 导入，保留行形状（`shapeMemoryRow`）与校验的断言。
+
+`npm test` 全绿：6 个 smoke + 42 条单测。插件里已经没有任何指向 Python 的运行时依赖了。

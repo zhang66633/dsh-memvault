@@ -41,14 +41,10 @@ import {
 } from '../lib/panel.js'
 import {
   DEFAULT_LIMIT,
-  MAX_IDS,
   MAX_LIMIT,
   MEMORY_TEXT_CLAMP,
-  buildMemoryQuery,
-  readMemories,
-  readMemoryProvenance,
   shapeMemoryRow,
-} from '../lib/memories.js'
+} from '../lib/core/panel-read.js'
 import { MAX_FLAGS, NOTE_CLAMP, flaggedIds, normalizeFlags, setFlag } from '../lib/flags.js'
 import {
   INPUT_TEXT_CLAMP,
@@ -66,15 +62,11 @@ import { PRODUCED_TEXT_CLAMP, shapeProduced } from '../lib/extract.js'
 import { countRetyped, readMemories as readCoreMemories } from '../lib/core/panel-read.js'
 import { CoreStore } from '../lib/core/store.js'
 import { buildStructure } from '../lib/structure.js'
-import { runCli } from '../lib/cli.js'
 import {
   BLOCK_LABEL_MAX,
   BLOCK_VALUE_MAX,
-  buildBlockDeleteArgs,
-  buildBlockSetArgs,
-  runBlockAction,
   validateBlockAction,
-} from '../lib/blocks-write.js'
+} from '../lib/core/block-write.js'
 import { loadState, saveWatermarks } from '../lib/extract.js'
 import { DEFAULT_EXTRACT, apply as applyHost, dbFileInfo, name as hostName } from '../lib/index.js'
 import { wrapClientBundle } from './build-client.mjs'
@@ -177,18 +169,6 @@ check('a missing host is refused', !isTrustedRequest({}))
   check('a value on delete is refused', !validateBlockAction({ ...base, action: 'delete', value: 'x' }).ok)
   check('a non-integer limit is refused', !validateBlockAction({ ...base, limit: '2.5' }).ok)
   check('a valid limit is kept', validateBlockAction({ ...base, limit: 500 }).limit === 500)
-
-  const setArgs = buildBlockSetArgs(validateBlockAction({ ...base, limit: 500 }))
-  check('blocks-set argv puts the limit before `--` and the positionals after it',
-    setArgs.join(' ') === 'blocks-set --type user --id lenovo --limit 500 -- persona 喜欢结论先行',
-    setArgs.join(' '))
-  const dashArgs = buildBlockSetArgs(validateBlockAction({ ...base, value: '--not-a-flag' }))
-  check('a value that looks like an option stays data (`--` separator)',
-    dashArgs.join(' ') === 'blocks-set --type user --id lenovo -- persona --not-a-flag',
-    dashArgs.join(' '))
-  check('blocks-delete argv needs no value',
-    buildBlockDeleteArgs(validateBlockAction({ ...base, action: 'delete', value: undefined })).join(' ')
-    === 'blocks-delete --type user --id lenovo -- persona')
 }
 
 // ── bounded JSON body reading ───────────────────────────────────────────────
@@ -221,62 +201,14 @@ check('a missing host is refused', !isTrustedRequest({}))
     res.code === 400 && res.body.ok === false, `code=${res.code}`)
 }
 
-// ── the browse query builder (pure) ─────────────────────────────────────────
 {
-  const plain = buildMemoryQuery({})
-  check('a bare browse selects the display columns, newest first, and a page',
-    plain.sql.startsWith('SELECT id, user_id, agent_id, run_id, memory, memory_type, metadata, created_at, updated_at FROM memories')
-    && plain.sql.includes('ORDER BY created_at DESC')
-    && plain.sql.endsWith('LIMIT ? OFFSET ?')
-    && plain.limit === DEFAULT_LIMIT && plain.offset === 0,
-    plain.sql)
-
-  const searched = buildMemoryQuery({ q: "50%_x\\y'; DROP TABLE memories; --", type: 'user', user: 'lenovo', limit: '7', offset: '3' })
-  check('every value is a placeholder, never interpolated',
-    !searched.sql.includes('DROP') && !searched.sql.includes('lenovo')
-    && searched.sql.includes("memory LIKE ? ESCAPE '\\'") && searched.sql.includes('memory_type = ?')
-    && searched.sql.includes('user_id = ?'),
-    searched.sql)
-  check('LIKE wildcards in the query are escaped',
-    searched.args[0] === "%50\\%\\_x\\\\y'; DROP TABLE memories; --%",
-    String(searched.args[0]))
-  check('limit and offset are parsed and appended after the filters',
-    searched.limit === 7 && searched.offset === 3
-    && searched.args.at(-2) === 7 && searched.args.at(-1) === 3,
-    JSON.stringify(searched.args))
-  check('the applied filters are echoed back',
-    searched.applied.q.startsWith('50%') && searched.applied.type === 'user' && searched.applied.user === 'lenovo'
-    && searched.applied.agent === null,
-    JSON.stringify(searched.applied))
-
-  const clamped = buildMemoryQuery({ limit: '9999', offset: '-5', order: 'nope' })
-  check('limit is capped, a negative offset is ignored, an unknown order falls back',
-    clamped.limit === MAX_LIMIT && clamped.offset === 0 && clamped.order === 'created'
-    && clamped.sql.includes('ORDER BY created_at DESC'),
-    `limit=${clamped.limit} offset=${clamped.offset} order=${clamped.order}`)
-  check('the updated order sorts by updated_at',
-    buildMemoryQuery({ order: 'updated' }).sql.includes('ORDER BY updated_at DESC, id DESC'))
-  check('a count query shares the filters but not the page',
-    buildMemoryQuery({ q: 'x', limit: 5 }).countSql === 'SELECT COUNT(*) AS n FROM memories WHERE memory LIKE ? ESCAPE \'\\\'',
-    buildMemoryQuery({ q: 'x', limit: 5 }).countSql)
-
   check('a long memory is clamped for display but reports its length',
     shapeMemoryRow({ id: 'm1', memory: 'x'.repeat(MEMORY_TEXT_CLAMP + 50), memory_type: 'user' }).chars === MEMORY_TEXT_CLAMP + 50
     && shapeMemoryRow({ id: 'm1', memory: 'x'.repeat(MEMORY_TEXT_CLAMP + 50) }).memory.length === MEMORY_TEXT_CLAMP + 1)
   check('broken metadata does not break the row',
     shapeMemoryRow({ id: 'm', memory: 'a', metadata: '{not json' }).metadata === null)
-
-  const byIds = buildMemoryQuery({ ids: ' a , b ,, c ' })
-  check('an id list becomes placeholders, capped',
-    byIds.sql.includes('id IN (?, ?, ?)')
-    && byIds.args.slice(0, 3).join(',') === 'a,b,c'
-    && byIds.applied.ids.join(',') === 'a,b,c',
-    byIds.sql)
-  check('an empty id list adds no clause',
-    !buildMemoryQuery({ ids: ' , ' }).sql.includes('IN (')
-    && buildMemoryQuery({ ids: ',' }).applied.ids.length === 0)
-  check('the id list is capped', buildMemoryQuery({ ids: Array.from({ length: MAX_IDS + 20 }, (_, i) => `x${i}`).join(',') }).applied.ids.length === MAX_IDS)
 }
+
 
 // ── review flags (plugin state, never the store) ────────────────────────────
 {

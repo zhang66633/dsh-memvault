@@ -1,6 +1,6 @@
 /**
  * Smoke test for the extraction half: transcript rendering, the watermark store,
- * and a REAL end-to-end write through the MemVault CLI.
+ * and a REAL end-to-end write through the in-plugin core pipeline.
  *
  *   node scripts/smoke-extract.mjs
  *
@@ -13,17 +13,16 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  buildAddInvocation,
   createEventBuffer,
   loadState,
   loadWatermarks,
   renderTranscript,
-  runExtraction,
   saveState,
   saveWatermarks,
   turnSpanByBoundary,
 } from '../lib/extract.js'
-import { DEFAULT_EXTRACT } from '../lib/index.js'
+import { CoreStore } from '../lib/core/store.js'
+import { buildPipeline, runCoreExtraction } from '../lib/core/pipeline.js'
 import { DEFAULT_WINDOW, createTurnWindow } from '../lib/window.js'
 
 const failures = []
@@ -158,51 +157,31 @@ try {
       return Object.keys(loadState(statePath).flags).length === 0
     })())
 
-  // ── invocation ─────────────────────────────────────────────────────────────
-  const inv = buildAddInvocation({ pythonPath: 'py.exe', projectDir: 'D:/x', user: 'u', agent: 'a' })
-  check('invocation uses add --stdin with scope flags',
-    inv.args.join(' ') === '-m memvault.cli add --stdin --user u --agent a' && inv.cwd === 'D:/x',
-    inv.args.join(' '))
-
-  // ── REAL end-to-end write, throwaway db ────────────────────────────────────
+  // ── REAL end-to-end write through the core pipeline, throwaway db ──────────
   const dbPath = join(dir, 'e2e.db')
-  const result = await runExtraction({
-    config: {
-      ...DEFAULT_EXTRACT,
-      env: {
-        MEMVAULT_DB_PATH: dbPath,
-        MEMVAULT_EMBEDDER: 'local',
-        MEMVAULT_EXTRACTOR: 'rule',
-        PYTHONIOENCODING: 'utf-8',
-        PYTHONUTF8: '1',
-      },
-    },
+  const store = new CoreStore(dbPath)
+  const pipeline = buildPipeline({
+    env: { MEMVAULT_EXTRACTOR: 'rule', MEMVAULT_EMBEDDER: 'local', OPENAI_API_KEY: '' },
+    dbPath,
+  })
+  const result = await runCoreExtraction({
+    store,
+    extractor: pipeline.extractor,
+    embedder: pipeline.embedder,
+    scope: { userId: 'u', agentId: 'a' },
     messages: [{ role: 'user', content: rendered }],
   })
   console.log('extraction result:', JSON.stringify(result))
   check('extraction reports success', result.ok === true, result.error ?? '')
   check('extraction wrote memories', (result.added ?? 0) >= 1, `added=${result.added}`)
 
-  const db = new DatabaseSync(dbPath, { readOnly: true })
-  const rows = db.prepare('SELECT memory FROM memories').all()
-  db.close()
-  console.log('rows written:', JSON.stringify(rows.map((r) => r.memory)))
-  check('the fact landed in the store', rows.some((r) => r.memory.includes('喜欢吃辣')))
+  const rows = store.db.prepare('SELECT text FROM memories').all()
+  console.log('rows written:', JSON.stringify(rows.map((r) => r.text)))
+  check('the fact landed in the store', rows.some((r) => r.text.includes('喜欢吃辣')))
   check('rows carry an embedding (pipeline ran, not a raw insert)',
-    (() => {
-      const d = new DatabaseSync(dbPath, { readOnly: true })
-      const n = d.prepare('SELECT COUNT(*) c FROM memories WHERE embedding IS NOT NULL').get().c
-      d.close()
-      return n >= 1
-    })())
+    store.db.prepare('SELECT COUNT(*) c FROM memory_embeddings').get().c >= 1)
+  store.close()
 
-  // ── failure path ───────────────────────────────────────────────────────────
-  const bad = await runExtraction({
-    config: { ...DEFAULT_EXTRACT, pythonPath: 'D:/nonexistent/python.exe', timeoutMs: 5000, env: {} },
-    messages: [{ role: 'user', content: 'x' }],
-  })
-  check('a broken python path fails soft, never throws', bad.ok === false && typeof bad.error === 'string',
-    bad.error?.slice(0, 60) ?? '')
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

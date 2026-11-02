@@ -155,19 +155,6 @@ check('the built bundle offers un-flagging from the review queue',
   clientBundle.includes('取消标记') && existsSync(join(root, pkg.exports['./client'])))
 check('the built bundle carries the structure view',
   clientBundle.includes('/memvault/api/structure') && clientBundle.includes('关系图'))
-{
-  const { runReindex } = await import('../lib/reindex.js')
-  const { MEMVAULT_DIR: vaultDir, MEMVAULT_PYTHON: vaultPython } = await import('../lib/index.js')
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-mv-reindex-'))
-  const env = { ...process.env, MEMVAULT_DB_PATH: join(dir, 'r.db'), MEMVAULT_EMBEDDER: 'local', MEMVAULT_EMBEDDING_DIM: '384' }
-  const dry = runReindex({ pythonPath: vaultPython, projectDir: vaultDir, env })
-  check('the reindex runner reports without writing',
-    dry.ok && dry.report && dry.report.dryRun === true && typeof dry.report.total === 'number',
-    dry.ok ? ('total ' + dry.report.total) : String(dry.error))
-  check('the reindex runner fails loudly on a project it cannot run',
-    runReindex({ pythonPath: vaultPython, projectDir: join(dir, 'nope'), env }).ok === false)
-}
-
 check('the built bundle carries the reindex entry',
   clientBundle.includes('嵌入器重算') && clientBundle.includes('执行重算') && clientBundle.includes('/memvault/api/reindex'))
 
@@ -195,8 +182,9 @@ check('the path guard does not mistake a URL scheme for a drive letter',
 
 const ALLOWED_ABSOLUTE_PATH_FILES = ['lib/config.js', 'lib/blocks.js', 'lib/index.js', 'cordis.patch.yml']
 const SOURCE_FILES = [
-  'lib/config.js', 'lib/blocks.js', 'lib/index.js', 'lib/panel.js', 'lib/memories.js',
-  'lib/structure.js', 'lib/extract.js', 'lib/window.js', 'lib/cli.js', 'lib/flags.js',
+  'lib/config.js', 'lib/blocks.js', 'lib/index.js', 'lib/panel.js',
+  'lib/structure.js', 'lib/extract.js', 'lib/window.js', 'lib/flags.js',
+  'lib/core/store.js', 'lib/core/pipeline.js', 'lib/core/panel-read.js', 'lib/core/block-write.js',
   'src/client/index.js', 'cordis.patch.yml',
 ]
 const offenders = SOURCE_FILES.filter((rel) => !ALLOWED_ABSOLUTE_PATH_FILES.includes(rel)

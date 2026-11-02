@@ -9,7 +9,6 @@
     "./client": "./lib/client.js",
     "./blocks": "./lib/blocks.js",
     "./flags": "./lib/flags.js",
-    "./memories": "./lib/memories.js",
     "./panel": "./lib/panel.js",
     "./review": "./lib/review.js",
     "./package.json": "./package.json"
