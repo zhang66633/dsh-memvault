@@ -246,17 +246,21 @@ flowchart LR
 
 ## 6. 里程碑
 
-| 阶段 | 内容 | 验收 |
-|---|---|---|
-| **M0** | store + schema + 4 个导入器（memvault-export / mcp-memory / basic-memory / mem0） | 导出→导入→条数与内容一致；node:test 全绿 |
-| **M1** | 抽取（HTTP）+ 结构化决策 + supersede | 旧库同款用例：改写判 update、冲突判 supersede |
-| **M2** | 检索（FTS+向量+RRF+守卫）+ MCP 工具 + 面板读新库 | 评测集上 recall/negative 不劣于旧引擎 |
-| **M3** | 退役 Python 路径；迁移文档收尾 | 插件不再 spawn Python |
+| 阶段 | 内容 | 验收 | 状态 |
+|---|---|---|---|
+| **M0** | store + schema + 4 个导入器（memvault-export / mcp-memory / basic-memory / mem0） | 导出→导入→条数与内容一致；node:test 全绿 | ✅ |
+| **M1** | 抽取（HTTP）+ 结构化决策 + supersede | 旧库同款用例：改写判 update、冲突判 supersede | ✅ |
+| **M2** | 检索（FTS+向量+RRF+守卫）+ MCP 工具 + 面板读新库 | 评测集上 recall/negative 不劣于旧引擎 | ✅（工具真机验证；469 条真实数据回填向量后检索质量恢复） |
+| **M3** | 退役 Python 路径；迁移文档收尾 | 插件不再 spawn Python | ✅（`cli.js` / `reindex.js` / 旧读取器已删除；面板与抽取同库） |
+
+遗留取舍（不是遗漏）：Python 的 retype 启发式未移植，新写入的类型由抽取器决定；
+导入的旧行仍带 `metadata.retyped_from`，面板照常列出。
 
 ## 7. 未决（可以再吵一轮）
 
-1. **FTS5 trigram 还是 JS BM25**：我选 trigram（原生、bm25、少写代码），代价是 <3 字符要 LIKE 兜底。
-2. **默认语义嵌入**：移植 feature-hashing（离线但弱）／默认关闭纯 FTS（简单但"记忆检索"退化成关键词）／首次启动引导配端点。我倾向移植。
+1. ~~**FTS5 trigram 还是 JS BM25**~~：已定 trigram（实测通过；<3 字符走 LIKE 兜底）。
+2. ~~**默认语义嵌入**~~：已定——离线哈希做默认（零配置可用），项目 `.env` 有 `OPENAI_API_KEY` 时自动升级为
+   OpenAI 兼容端点，按 `model` 存第二份向量，切换不重写记忆；真实 469 条数据回填后检索质量恢复。
 3. **多设备、加密**：明确不做，单机本地库。
 
 ## 8. 验证记录（2026-11-01）
