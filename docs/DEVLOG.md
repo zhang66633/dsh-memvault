@@ -1305,3 +1305,31 @@ Python 服务端读 `.env` 的 `MEMVAULT_DB_PATH`，插件读自己的 `dbPath`�
 至此这条线收口：M0–M3 完成，插件零 Python 依赖，工具/面板/抽取同库，前端三页签各自精简，
 关系图重画且标签只在悬停时出现。未做的仍是那两件（answerable 的 LLM 裁决、decider 评测集），
 写在 §7 的未决清单里。
+## 41. 2026-11-02：replay 暴露的回归——抽取器选择被忽略
+
+### 41.1 发生了什么
+
+用面板的 replay 接口做受控验证：
+
+```
+POST /memvault/api/replay
+{"key":"b9a25f5d@7387","extractor":"rule","text":"记住：抽取验证以 origin=extract 的库行为准…"}
+```
+
+返回 202，几秒后诊断出现 `ok added=0`，库里没有新增行。看起来像“规则抽取没抽到”，但单独跑
+`new RuleExtractor().extract(text)` 明确返回一条事实。原因是：**插件在启动时按 `.env` 建了一份
+pipeline，replay 传进来的 `MEMVAULT_EXTRACTOR=rule` 被完全忽略**——实际跑的是 LLM 抽取器，
+而 LLM 没把这条“指令式”文本当成用户长期事实，于是 `added=0`。
+
+这是切换核心库时丢掉的语义：Python 版本把 `env` 传给子进程，CLI 每次按它选抽取器；JS 版本没有。
+
+### 41.2 修法
+
+- `pipeline.js` 新增 `resolvePipeline({ baseEnv, overrides })`：覆盖项优先于基础环境，语义与旧 CLI 一致。
+- `index.js`：有覆盖时按调用构建 pipeline，否则沿用启动时那份；诊断里记下**实际**用了哪个抽取器。
+- 面板诊断表的结果列显示 `[rule]` / `[llm]` 前缀，这个事实以后可见而不是靠猜。
+
+### 41.3 验证
+
+单测 46 条（新增一条：有 key 时 `MEMVAULT_EXTRACTOR=rule` 仍然强制规则；无 key 时 `llm` 退回规则）。
+真机验证需要重启一次，然后重跑同一条 replay，期望 `[rule] ok added=1`，库里出现 `origin='extract'`。

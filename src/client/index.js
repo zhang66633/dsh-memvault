@@ -1496,7 +1496,7 @@ function MemoryPanel() {
                 h('span', { key: `s${i}`, style: S.mono }, String(d.turns ?? '—')),
                 h('span', { key: `c${i}`, style: S.mono }, String(d.transcriptChars ?? '—')),
                 h('span', { key: `o${i}`, style: { ...S.mono, color: outcomeTone(d.outcome) }, title: d.outcome },
-                  `${d.recovered === true ? '↻ ' : ''}${d.outcome}`,
+                  `${d.recovered === true ? '↻ ' : ''}${d.extractor ? `[${d.extractor}] ` : ''}${d.outcome}`,
                   ...(d.produced?.length
                     ? [' ', h('button', {
                         key: 'p',

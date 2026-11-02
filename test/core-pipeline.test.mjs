@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { CoreStore } from '../lib/core/store.js'
 import { RuleExtractor } from '../lib/core/extract.js'
 import { LocalEmbedder } from '../lib/core/embed.js'
-import { runCoreExtraction, buildPipeline } from '../lib/core/pipeline.js'
+import { runCoreExtraction, buildPipeline, resolvePipeline } from '../lib/core/pipeline.js'
 
 function openStore(t) {
   const dir = mkdtempSync(join(tmpdir(), 'memvault-pipeline-'))
@@ -64,4 +64,15 @@ test('buildPipeline forces the rule extractor offline', () => {
   const pipeline = buildPipeline({ env: { MEMVAULT_EXTRACTOR: 'rule', OPENAI_API_KEY: 'sk-x' } })
   assert.equal(pipeline.usesModel, false)
   assert.ok(pipeline.extractor instanceof RuleExtractor)
+})
+
+test('a per-call override beats the pipeline the plugin built at startup', () => {
+  const baseEnv = { OPENAI_API_KEY: 'sk-x', OPENAI_CHAT_MODEL: 'm' }
+  const forced = resolvePipeline({ baseEnv, overrides: { MEMVAULT_EXTRACTOR: 'rule' } })
+  assert.equal(forced.usesModel, false)
+  assert.ok(forced.extractor instanceof RuleExtractor)
+  const inherited = resolvePipeline({ baseEnv, overrides: {} })
+  assert.equal(inherited.usesModel, true)
+  const withoutKey = resolvePipeline({ baseEnv: {}, overrides: { MEMVAULT_EXTRACTOR: 'llm' } })
+  assert.equal(withoutKey.usesModel, false)
 })
