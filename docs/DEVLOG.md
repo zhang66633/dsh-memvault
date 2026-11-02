@@ -1358,3 +1358,19 @@ replay 里缺失的信息。
 
 修法：`read.dbPath` 一律取 `coreDbPath`；读取失败的警告文案也用它；`settings.dbPath` 从代码里
 彻底移除（配置键仍被接受，只是不再读取）。
+## 44. 2026-11-02：replay 的 `added=0` 是我的验证脚本编码问题
+
+重启后再跑 replay，诊断仍是 `[rule] ok added=0`，但同一段文本在 Node 里走同样的
+`resolvePipeline` + `runCoreExtraction` 能稳定 `added=1`。差别在**发送方式**：
+
+- PowerShell 5.1 的 `Invoke-WebRequest -Body $jsonString` 按系统代码页编码字符串，
+  中文被替换成 `?`——长度不变（46 字符），所以诊断的 `transcriptChars` 看起来完全正常，
+  规则正则却一个也匹配不到，LLM 看到的也是乱码。
+- 用 `[Text.Encoding]::UTF8.GetBytes($json)` 发送后立刻变成 `[rule] ok added=1`，
+  库中出现 `mem_7437e0014045`（origin=extract，user，带 1 条向量）。
+
+所以：插件这条链路是通的，之前那几次 0 是**客户端把请求内容弄坏了**。这与 §30 同源
+（PowerShell 文本编码），以后凡是带中文的 HTTP 探针，一律发送 UTF-8 字节。
+
+顺带确认两件事：`extractor=rule` 字段已出现在诊断里（6d75512 生效），且严格解析没有
+误伤正常回答。
