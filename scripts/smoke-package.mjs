@@ -155,14 +155,14 @@ check('the built bundle offers un-flagging from the review queue',
   clientBundle.includes('取消标记') && existsSync(join(root, pkg.exports['./client'])))
 check('the built bundle carries the structure view',
   clientBundle.includes('/memvault/api/structure') && clientBundle.includes('关系图'))
-check('the built bundle carries the reindex entry',
-  clientBundle.includes('嵌入器重算') && clientBundle.includes('执行重算') && clientBundle.includes('/memvault/api/reindex'))
+check('the built bundle carries the vector backfill entry',
+  clientBundle.includes('向量回填') && clientBundle.includes('检查缺口') && clientBundle.includes('/memvault/api/reindex'))
 
 check('the built bundle reports what the window dropped',
   clientBundle.includes('窗口丢弃') && clientBundle.includes('超上限'))
 
-check('the built bundle states where the paths can be changed',
-  clientBundle.includes('位置与初始化') && clientBundle.includes('改路径只有两个真实的入口'))
+check('the built bundle keeps the path map behind one toggle',
+  clientBundle.includes('存储与注入') && clientBundle.includes('路径、窗口与自检'))
 
 // ── absolute paths only where they are allowed to be ─────────────────────────
 // A hard-coded disk is how "works on my machine" starts. Four files may contain one,
