@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.12-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.10.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522.13-339933">
@@ -40,6 +40,7 @@ MCP is pull-only, so "memory is already loaded" can never come from a server. Th
 | 🔎 **Hybrid recall** | substring truth (trigram) + paraphrase (vectors), fused |
 | 🛠️ **Two tools** | scoped by `user_id` / `agent_id` / `run_id` |
 | 🎛️ **A real panel** | diagnostics, vector backfill, provenance, relation graph |
+| 🃏 **Native tool cards** | `memory_search` / `memory_add` render their own conversation cards |
 | 🪶 **Zero deps** | `node:sqlite` + hand-written client bundle |
 
 ## 🚀 Install
@@ -57,11 +58,14 @@ Self-owned install links a checkout in the profile's `package.json` (`dsh-memvau
 | `scopes` | `[{user,lenovo},{agent,claude-code-memory}]` |
 | `labels` / `maxChars` / `refreshMs` | `[]` / `4000` / `30000` |
 | `extract.everyNTurns` / `idleMs` / `windowTurns` | `3` / `20000` / `8` |
+| `extract.timeoutMs` | `60000` (wired as `MEMVAULT_EXTRACT_TIMEOUT_MS`) |
 | `extract.minTranscriptChars` / `maxInputChars` | `40` / `6000` |
-| `extract.projectDir` / `env` | checkout path / `{}` (where `.env` is read) |
+| `extract.projectDir` / `env` | discovered `.env` directory / `{}` |
 | `panel.writes` | `true` |
 
-`dbPath` and `extract.pythonPath` are accepted but unused. The pipeline reads the usual `.env` keys (`OPENAI_*`, `MEMVAULT_EXTRACTOR=rule|llm`, `MEMVAULT_EMBEDDER=local|openai`, `MEMVAULT_ADJUDICATOR=off`).
+The store path is not configurable through this plugin (`~/.dsh/memvault/memvault.db`, or `DSH_MEMVAULT_CORE_DB`). `projectDir` is only where `.env` is read — nothing is spawned, so a machine without a Python checkout still works, and the panel lists the directories it checked. The pipeline reads the usual `.env` keys (`OPENAI_*`, `MEMVAULT_EXTRACTOR=rule|llm`, `MEMVAULT_EMBEDDER=local|openai`, `MEMVAULT_ADJUDICATOR=off`).
+
+The old `dbPath`, `extract.pythonPath` and `extract.user/agent/run` keys are gone: a stale patch that still sets one is reported as an ignored key in the panel instead of silently doing nothing. The write scope is derived from `scopes` (first user → `user_id`, first agent → `agent_id`).
 
 ## 🗄️ Store & migration
 
@@ -85,7 +89,7 @@ flowchart LR
 
 ## 🧪 Verification
 
-`npm test` (6 smokes + 48 unit). Live: `/memvault/api/status` shows the last five outcomes (`[rule]|[llm] ok added=N`); replay via `POST /memvault/api/replay`; recall via `memory_search`.
+`npm test` (6 smokes + 56 unit). Live: `/memvault/api/status` shows the last five outcomes (`[rule]|[llm] ok added=N`); replay via `POST /memvault/api/replay`; recall via `memory_search`.
 
 ## 🧠 Decisions
 

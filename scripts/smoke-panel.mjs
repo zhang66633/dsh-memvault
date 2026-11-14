@@ -338,10 +338,11 @@ try {
   const contexts = []
   const routes = new Map()
   const children = []
+  const handlers = []
   const ctx = {
     logger: { warn() {}, info() {} },
     effect(fn) { return fn() },
-    on() {},
+    on(event, handler) { handlers.push({ event, handler }); return () => {} },
     systemPrompt: { context(spec) { contexts.push(spec); return () => {} } },
     inject(deps, callback) { children.push({ deps, callback }) },
   }
@@ -355,13 +356,11 @@ try {
   const childCtx = { effect: ctx.effect, webServer }
 
   applyHost(ctx, {
-    dbPath,
     scopes: [{ type: 'user', id: 'lenovo' }, { type: 'agent', id: 'claude-code-memory' }],
     // The plugin's write route must reach the same throwaway store, so it
-    // inherits pythonPath/projectDir/env from the extract config.
+    // inherits projectDir/env from the extract config.
     extract: {
       enabled: true, everyNTurns: 3, statePath,
-      pythonPath: DEFAULT_EXTRACT.pythonPath,
       projectDir: DEFAULT_EXTRACT.projectDir,
       env: { ...DEFAULT_EXTRACT.env, MEMVAULT_EXTRACTOR: 'rule', MEMVAULT_EMBEDDER: 'local' },
     },
@@ -371,6 +370,11 @@ try {
   check('a systemPrompt runtime context is registered',
     contexts.length === 1 && contexts[0].name === 'memvault:core' && typeof contexts[0].text === 'function',
     contexts.map((c) => c.name).join(','))
+  // Memory text is arbitrary prose and code: interpolation must be off or a
+  // {{name}} inside a memory throws during assemble() and fails the request.
+  check('the injected context never interpolates prompt variables',
+    contexts[0].interpolate === false && contexts[0].required === true,
+    JSON.stringify({ interpolate: contexts[0].interpolate, required: contexts[0].required }))
   const injected = contexts[0].text()
   check('the injected text carries both blocks and the attribution header',
     injected.includes('[user/lenovo/human]') && injected.includes('[agent/claude-code-memory/role]')
@@ -379,6 +383,51 @@ try {
   const webChild = children.find((child) => child.deps.join(',') === 'webServer')
   check('the webServer child plugin is requested, not required',
     Boolean(webChild), JSON.stringify(children.map((c) => c.deps)))
+
+  // ── the tool half is not part of the extraction half ──────────────────────
+  // `memory_search`/`memory_add` read and write the same store the prompt reads;
+  // they must exist even when windowed extraction is switched off. This used to be
+  // broken by an early `return` that took the whole tool surface with it.
+  const toolChild = children.find((child) => child.deps.join(',') === 'tools')
+  check('the tools service is requested without requiring it', Boolean(toolChild),
+    JSON.stringify(children.map((c) => c.deps)))
+  const registeredTools = []
+  toolChild?.callback({
+    effect(fn) { return fn() },
+    tools: { register(definition) { registeredTools.push(definition.name); return () => {} } },
+  })
+  check('both memory tools register on the store', registeredTools.join(',') === 'memory_search,memory_add',
+    registeredTools.join(','))
+
+  // A closed session is the one moment "this conversation is over" is known, so its
+  // window is handed over then instead of waiting for an idle timer it may never get.
+  const disposedHandler = handlers.find((entry) => entry.event === 'session/disposed')?.handler
+  check('a closed session is observed', typeof disposedHandler === 'function',
+    handlers.map((entry) => entry.event).join(','))
+  let disposedThrew = null
+  try { disposedHandler?.({ id: 'never-seen' }) } catch (error) { disposedThrew = error }
+  check('disposing a session with no window is a no-op', disposedThrew === null, String(disposedThrew))
+
+  const gateContexts = []
+  const gateChildren = []
+  const gateHandlers = []
+  applyHost({
+    logger: { warn() {}, info() {} },
+    effect(fn) { return fn() },
+    on(event, handler) { gateHandlers.push({ event, handler }); return () => {} },
+    systemPrompt: { context(spec) { gateContexts.push(spec); return () => {} } },
+    inject(deps, callback) { gateChildren.push({ deps, callback }) },
+  }, {
+    scopes: [{ type: 'user', id: 'lenovo' }],
+    extract: { enabled: false, statePath, projectDir: DEFAULT_EXTRACT.projectDir },
+  })
+  check('extraction off still registers the injection, the panel and the tools',
+    gateContexts.length === 1
+    && gateChildren.some((child) => child.deps.join(',') === 'tools')
+    && gateChildren.some((child) => child.deps.join(',') === 'webServer'),
+    JSON.stringify(gateChildren.map((c) => c.deps)))
+  check('extraction off registers no session observers',
+    gateHandlers.length === 0, gateHandlers.map((h) => h.event).join(','))
 
   webChild.callback(childCtx)
   check('all ten exact routes are registered',
@@ -419,9 +468,9 @@ try {
   check('the read half reports its budget and TTL',
     first.body.read.maxChars === 4000 && first.body.read.refreshMs === 30000)
   check('the payload says the panel may write', first.body.writable === true)
-  check('a clean config reports no issues',
-    first.body.configIssues.unknown.length === 0 && first.body.configIssues.problems.length === 0,
-    JSON.stringify(first.body.configIssues))
+  check('the payload reports the derived write scope',
+    first.body.writeScope.userId === 'lenovo' && first.body.writeScope.agentId === 'claude-code-memory'
+    && first.body.writeScope.runId === null, JSON.stringify(first.body.writeScope))
   check('the payload reports the window policy and an empty window',
     first.body.extract.window.everyNTurns === 3 && first.body.extract.window.idleMs === 20000
     && first.body.extract.window.windowTurns === 8 && Array.isArray(first.body.extract.window.pending)
@@ -543,6 +592,17 @@ try {
     Array.isArray(readOnlyStatus.body.extract.window.pending)
     && readOnlyStatus.body.extract.window.pending.length === 0)
 
+  // Replay writes through the extraction pipeline, which this mount does not have,
+  // so the panel must learn that from the payload instead of offering a dead button.
+  const readOnlyReview = { code: null, body: null }
+  await readOnlyRoutes.get(REVIEW_PATH).handler(
+    { headers: { host: '127.0.0.1:19387' }, method: 'GET', on() {} },
+    { writeHead(code) { readOnlyReview.code = code }, end(payload) { readOnlyReview.body = JSON.parse(payload) } },
+  )
+  check('a read-only mount reports replay as unavailable',
+    readOnlyReview.code === 200 && readOnlyReview.body.replayEnabled === false,
+    JSON.stringify({ code: readOnlyReview.code, replayEnabled: readOnlyReview.body?.replayEnabled }))
+
   // A config with a typo and a bad value: the plugin keeps running on defaults,
   // and the panel is what makes the mistake visible.
   const issueChildren = []
@@ -627,7 +687,6 @@ try {
         windowTurns: 8,
         minTranscriptChars: 10,
         statePath: windowState,
-        pythonPath: DEFAULT_EXTRACT.pythonPath,
         projectDir: DEFAULT_EXTRACT.projectDir,
         env: {
           ...DEFAULT_EXTRACT.env,
@@ -922,6 +981,8 @@ try {
     check('an empty queue has no items and no request',
       emptyQueue.code === 200 && emptyQueue.body.items.length === 0 && emptyQueue.body.request === '',
       JSON.stringify(emptyQueue.body))
+    check('the queue says replay is available when extraction is on',
+      emptyQueue.body.replayEnabled === true, String(emptyQueue.body.replayEnabled))
 
     await flagCall({ id: target.id, flagged: true, note: '看着像助手口吻' })
     const queue = await hit(REVIEW_PATH)
@@ -1101,7 +1162,7 @@ try {
     // A read-only panel cannot replay: it writes the store.
     const noReplayChildren = []
     applyHost({ ...ctx, inject: (deps, cb) => noReplayChildren.push({ deps, cb }) }, {
-      dbPath: windowDb, panel: { writes: false }, extract: { enabled: false, statePath: windowState },
+      panel: { writes: false }, extract: { enabled: false, statePath: windowState },
     })
     const noReplayRoutes = new Map()
     noReplayChildren[0].cb({
@@ -1114,7 +1175,88 @@ try {
       { writeHead(code) { noReplay.code = code }, end(payload) { noReplay.body = JSON.parse(payload) } },
     )
     check('panel.writes:false disables replay (it writes the store)',
-      noReplay.code === 403 && /disabled/.test(noReplay.body.error), noReplay.body.error)
+      noReplay.code === 403 && /write half/.test(noReplay.body.error), noReplay.body.error)
+  }
+
+  // ── a closed session hands over an armed window ────────────────────────────
+  // Its own mount and its own store: this scenario writes memories, and sharing the
+  // first mount's store would make the assertions above depend on test order.
+  {
+    const closeDir = mkdtempSync(join(tmpdir(), 'dsh-mv-close-'))
+    const closeDb = join(closeDir, 'close.db')
+    const closeState = join(closeDir, 'close-state.json')
+    const previousDb = process.env.DSH_MEMVAULT_CORE_DB
+    process.env.DSH_MEMVAULT_CORE_DB = closeDb
+    const closeRoutes = new Map()
+    const closeHandlers = []
+    const closeCtx = {
+      logger: { warn() {}, info() {} },
+      effect(fn) { return fn() },
+      on(event, handler) { closeHandlers.push({ event, handler }); return () => {} },
+      systemPrompt: { context() { return () => {} } },
+      inject(deps, callback) {
+        if (deps.includes('webServer')) {
+          callback({ effect: closeCtx.effect, webServer: { register(route) { closeRoutes.set(route.path, route); return () => {} } } })
+        }
+      },
+    }
+    applyHost(closeCtx, {
+      scopes: [{ type: 'user', id: 'lenovo' }],
+      extract: {
+        everyNTurns: 3, statePath: closeState, projectDir: '',
+        env: { MEMVAULT_EXTRACTOR: 'rule', MEMVAULT_EMBEDDER: 'local' },
+      },
+    })
+
+    const onEvent = closeHandlers.find((entry) => entry.event === 'session/event')?.handler
+    const onDisposed = closeHandlers.find((entry) => entry.event === 'session/disposed')?.handler
+    const status = async () => {
+      const out = { code: null, body: null }
+      await closeRoutes.get(STATUS_PATH).handler(
+        { headers: { host: '127.0.0.1:19387' }, method: 'GET', on() {} },
+        { writeHead(code) { out.code = code }, end(payload) { out.body = JSON.parse(payload) } },
+      )
+      return out.body
+    }
+    const pushTurn = (session, seq, text) => {
+      onEvent?.(session, { seq, type: 'user/message', data: { content: [{ type: 'text', text }] } })
+      onEvent?.(session, { seq: seq + 1, type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    }
+
+    const session = { id: 'sess-close-test' }
+    for (let index = 0; index < 3; index += 1) pushTurn(session, 100 + index * 2, `记住：第 ${index + 1} 轮，我用 VS Code 和 PowerShell 7。`)
+    const armed = await status()
+    check('three finished turns wait in the window',
+      armed.extract.window.pending.length === 1 && armed.extract.window.pending[0].turns === 3,
+      JSON.stringify(armed.extract.window.pending))
+
+    // A session below the threshold is not extracted on close: that is the exact
+    // low-signal window the idle rule refuses, and a shutdown disposes everything.
+    const oneTurn = { id: 'sess-one-turn' }
+    pushTurn(oneTurn, 200, '记住：只有一轮。')
+    const beforeClose = (await status()).extract.diagnostics.length
+    onDisposed?.({ id: 'sess-one-turn' })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const afterOneTurn = await status()
+    check('closing a session below the threshold extracts nothing new',
+      afterOneTurn.extract.diagnostics.length === beforeClose
+      && afterOneTurn.extract.window.pending.some((entry) => entry.sessionId === 'sess-one-turn'),
+      JSON.stringify(afterOneTurn.extract.window.pending))
+
+    onDisposed?.({ id: 'sess-close-test' })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    const afterClose = await status()
+    check('closing an armed session extracts its window and empties it',
+      !afterClose.extract.window.pending.some((entry) => entry.sessionId === 'sess-close-test')
+      && afterClose.extract.diagnostics.length > beforeClose
+      && /^(ok|skipped)/.test(afterClose.extract.diagnostics[0]?.outcome ?? ''),
+      JSON.stringify(afterClose.extract.diagnostics[0] ?? null))
+
+    if (previousDb === undefined) delete process.env.DSH_MEMVAULT_CORE_DB
+    else process.env.DSH_MEMVAULT_CORE_DB = previousDb
+    try {
+      rmSync(closeDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 })
+    } catch { /* the outer finally retries the shared temp dir */ }
   }
 } finally {
   // Windows can still hold a handle for a moment after the last CLI child exits
@@ -1175,12 +1317,87 @@ try {
     },
   })
   check('the panel registers in the conversation ring and the Plugins settings tab',
-    registered.length === 2
-    && registered.map((r) => r.config.name).join(',') === 'conversation.view,settings.plugins.tab'
-    && registered.every((r) => r.config.id === 'memvault' && typeof r.config.label() === 'string'),
-    registered.map((r) => `${r.config.name}#${r.config.id}`).join(', '))
-  check('both registrations render a React component',
+    registered.length === 4
+    && registered.slice(0, 2).map((r) => r.config.name).join(',') === 'conversation.view,settings.plugins.tab'
+    && registered.slice(0, 2).every((r) => r.config.id === 'memvault' && typeof r.config.label() === 'string'),
+    registered.map((r) => `${r.config.name}#${r.config.id ?? r.config.key}`).join(', '))
+  check('both memory tools get their own keyed tool view',
+    registered.slice(2).map((r) => r.config.name).join(',') === 'tool.call.toolview,tool.call.toolview'
+    && registered.slice(2).map((r) => r.config.key).join(',') === 'memory_search,memory_add',
+    registered.slice(2).map((r) => r.config.key).join(','))
+  check('every registration renders a React component',
     registered.every((r) => typeof r.component === 'function'))
+
+  // The tool cards are pure renderers (no hooks), so the stub's createElement is
+  // enough to execute them: whatever they would show must contain the real content
+  // and must never throw on malformed data.
+  const flatten = (node, out = []) => {
+    if (node === null || node === undefined || typeof node === 'boolean') return out
+    if (Array.isArray(node)) { for (const child of node) flatten(child, out); return out }
+    if (typeof node === 'object') {
+      for (const value of Object.values(node.props ?? {})) if (typeof value === 'string') out.push(value)
+      flatten(node.kids, out)
+      return out
+    }
+    out.push(String(node))
+    return out
+  }
+  const view = (key) => registered.find((r) => r.config.key === key)?.component
+  const args = (fields) => ({ text: (key) => fields[key] })
+  const resultBlock = (payload, extra = {}) => ({
+    name: '', // replaced by the caller
+    isError: false,
+    content: [{ type: 'text', text: typeof payload === 'string' ? payload : JSON.stringify(payload) }],
+    ...extra,
+  })
+
+  const searchTree = view('memory_search')({
+    phase: 'result',
+    block: {
+      ...resultBlock({ results: [{ id: 'mem_123456789abc', text: '用户用 VS Code', score: 0.42 }], answerable: true, note: '' }, { name: 'memory_search' }),
+      args: args({ query: '编辑器', user_id: 'lenovo' }),
+    },
+  })
+  const searchText = flatten(searchTree).join(' ')
+  check('the memory_search card shows the query, the scope and the matched text',
+    searchText.includes('编辑器') && searchText.includes('lenovo') && searchText.includes('用户用 VS Code')
+    && searchText.includes('0.420'),
+    searchText.slice(0, 160))
+
+  const pendingSearch = flatten(view('memory_search')({
+    phase: 'start',
+    block: { name: 'memory_search', args: args({ query: '端口' }) },
+  })).join(' ')
+  check('a running memory_search card shows the query and that it is working',
+    pendingSearch.includes('端口') && pendingSearch.includes('检索中'), pendingSearch.slice(0, 120))
+
+  const addTree = flatten(view('memory_add')({
+    phase: 'result',
+    block: {
+      ...resultBlock({ id: 'mem_abcdef123456', text: '用户偏好中文回答', type: 'user' }, { name: 'memory_add' }),
+      args: args({ text: '用户偏好中文回答', type: 'user', user_id: 'lenovo' }),
+    },
+  })).join(' ')
+  check('the memory_add card shows what was stored and its id',
+    addTree.includes('用户偏好中文回答') && addTree.includes('mem_abcdef12') && addTree.includes('lenovo'),
+    addTree.slice(0, 160))
+
+  const rawTree = flatten(view('memory_search')({
+    phase: 'result',
+    block: { name: 'memory_search', isError: false, content: [{ type: 'text', text: 'not json' }], args: args({ query: 'x' }) },
+  })).join(' ')
+  check('an unparseable result falls back to the raw text instead of throwing',
+    rawTree.includes('not json'), rawTree.slice(0, 120))
+
+  const errorTree = flatten(view('memory_add')({
+    phase: 'result',
+    block: {
+      name: 'memory_add', isError: true, error: { name: 'Error', code: 'X', reason: 'memory_add requires a scope' },
+      content: [], args: args({ text: 'x' }),
+    },
+  })).join(' ')
+  check('a failed memory tool shows its failure reason', errorTree.includes('requires a scope'),
+    errorTree.slice(0, 120))
 }
 
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `FAILED: ${failures.join(', ')}`}`)

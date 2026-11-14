@@ -101,6 +101,21 @@ const S = {
     color: filled ? '#fff' : tone,
   }),
   link: { border: 'none', background: 'transparent', color: C.muted, cursor: 'pointer', padding: 0, fontSize: '12px' },
+  // Tool cards: they replace the generic Tool row for the two memory tools, so they
+  // carry the row chrome themselves and stay inside the Chat flow's rhythm.
+  toolCard: {
+    border: `1px solid ${C.border}`, borderRadius: '10px', background: C.layer1,
+    padding: '8px 12px', margin: '6px 0', fontSize: '12.5px', lineHeight: 1.5,
+  },
+  toolHead: { display: 'flex', alignItems: 'baseline', gap: '8px', flexWrap: 'wrap', marginBottom: '4px' },
+  toolMeta: { color: C.muted, fontSize: '11.5px' },
+  toolRow: { display: 'flex', gap: '8px', alignItems: 'baseline', marginTop: '4px', minWidth: 0 },
+  toolText: { flex: '1 1 auto', minWidth: 0, wordBreak: 'break-word' },
+  toolRaw: {
+    margin: '4px 0 0', padding: '6px 8px', borderRadius: '6px', background: C.bg,
+    border: `1px solid ${C.border}`, fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
+    fontSize: '11.5px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '260px', overflow: 'auto',
+  },
 }
 
 const outcomeTone = (outcome) => (String(outcome ?? '').startsWith('ok') ? C.ok
@@ -460,7 +475,7 @@ function ReviewCard({ refreshToken, onChanged, onError }) {
         h('span', { style: S.mono, title: item.id }, `${String(item.id).slice(0, 12)}…`),
         item.note && h('span', { style: S.badge(C.idle) }, item.note),
         h('span', { style: S.spacer }),
-        item.replayable && h('button', { style: S.small(C.brand), onClick: () => openReplay(item) }, '重抽这个窗口'),
+        item.replayable && replayEnabled && h('button', { style: S.small(C.brand), onClick: () => openReplay(item) }, '重抽这个窗口'),
         h('button', { style: S.small(C.muted), disabled: busy, onClick: () => unflag(item.id) }, '取消标记'),
         h(CopyId, { id: item.id }),
       ),
@@ -468,7 +483,7 @@ function ReviewCard({ refreshToken, onChanged, onError }) {
       h('div', { style: { ...S.hint, marginTop: '4px' } },
         [
           item.window ? `来自窗口 @${item.window.seq ?? '?'}（${item.window.at ? new Date(item.window.at).toLocaleString() : '时间未知'}）` : '来源窗口已滚出保留窗口',
-          item.replayable ? '原文仍在，可重抽' : '原文已滚出（只保留最近几个窗口）',
+          item.replayable ? (replayEnabled ? '原文仍在，可重抽' : '原文仍在，但抽取已关闭') : '原文已滚出（只保留最近几个窗口）',
           item.history?.length ? `审计 ${item.history.map((entry) => entry.action ?? '?').join('→')}` : null,
         ].filter(Boolean).join('  ·  ')),
       editing?.id === item.id && h('div', { style: S.editor },
@@ -1422,8 +1437,19 @@ function MemoryPanel() {
               : '—',
           }),
           h(KV, { k: '注入', v: read ? `${read.blockCount} 块 · ${read.renderedChars} / ${read.maxChars} 字符` : '—' }),
-          h(KV, { k: '作用域', v: read?.scopes?.join('  ') }),
-          h(KV, { k: '抽取', v: extract?.enabled === false ? '已关闭（只读）' : '开启' }),
+          h(KV, { k: '注入作用域', v: read?.scopes?.join('  ') }),
+          // The write scope is derived from `scopes` by the host half; it used to be
+          // three config keys the panel displayed and no code read.
+          h(KV, {
+            k: '写入作用域',
+            v: (() => {
+              const w = data?.writeScope
+              if (!w) return '—'
+              const parts = [w.userId ? `user/${w.userId}` : '', w.agentId ? `agent/${w.agentId}` : '', w.runId ? `run/${w.runId}` : '']
+              return parts.filter(Boolean).join('  ') || '（仅由抽取器决定）'
+            })(),
+          }),
+          h(KV, { k: '抽取', v: extract?.enabled === false ? '已关闭（只读，工具仍可用）' : '开启' }),
         ),
         h(Details, { summary: '路径、窗口与自检' },
           h('div', { style: S.grid },
@@ -1450,8 +1476,8 @@ function MemoryPanel() {
               `路径来源：${data?.discovery?.source === 'env'
                 ? '环境变量 MEMVAULT_DIR'
                 : data?.discovery?.source === 'discovered'
-                  ? '自动发现'
-                  : '未找到'}`),
+                  ? '自动发现（找到含 .env 的目录）'
+                  : '未找到（只用库旁与进程环境的 .env）'}`),
             data.paths.map((item) => h('div', {
               key: item.key,
               style: { display: 'flex', gap: '8px', alignItems: 'baseline', marginTop: '3px' },
@@ -1513,10 +1539,157 @@ function MemoryPanel() {
   )
 }
 
+// ── memory tool cards (tool.call.toolview) ────────────────────────────────────
+//
+// DSH renders each atomic Tool call through the keyed `tool.call.toolview` slot,
+// keyed by the wire tool name. Without a registration the generic row prints the
+// tool's result text verbatim — for a memory search that is a JSON wall the user
+// cannot read at a glance, and for `memory_add` it is one object literal.
+//
+// The two views below are deliberately read-only and total: every reader tolerates
+// missing or malformed data and falls back to the raw text, because a card must
+// never be the reason a tool call renders wrong. Owner props used here are the
+// documented ToolCallOwnerProps (`phase`, `block`), whose `block.args` is the lazy
+// argument view and whose `block.content` carries the result blocks.
+
+/** One tool argument as text; absent, partial or non-string reads as `''`. */
+function toolArg(block, key) {
+  const reader = block?.args
+  if (!reader || typeof reader.text !== 'function') return ''
+  try {
+    const value = reader.text(key)
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * The tool result as `{ value, raw }`.
+ *
+ * `value` is the parsed object when the result's text blocks join into a JSON
+ * object, and `null` otherwise; `raw` is always the joined text, so a card can
+ * show what actually arrived instead of pretending there was nothing.
+ */
+function toolResult(block) {
+  const parts = Array.isArray(block?.content) ? block.content : []
+  const raw = parts
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text)
+    .join('')
+  if (raw.trim() === '') return { value: null, raw: '' }
+  try {
+    const parsed = JSON.parse(raw)
+    return { value: parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null, raw }
+  } catch {
+    return { value: null, raw }
+  }
+}
+
+/** A scope label from up to three optional arguments. */
+function scopeLabel(block) {
+  return [toolArg(block, 'user_id'), toolArg(block, 'agent_id'), toolArg(block, 'run_id')]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+/** Shared card chrome: a title chip, an optional context line, then the body. */
+function ToolShell({ title, tone, meta, children }) {
+  return h('div', { style: S.toolCard },
+    h('div', { style: S.toolHead },
+      h('span', { style: S.badge(tone) }, title),
+      meta ? h('span', { style: S.toolMeta }, meta) : null),
+    children)
+}
+
+/** Raw fallback, used whenever the structured shape is not there. */
+function renderRaw(block, raw) {
+  if (block?.isError) {
+    return h('div', { style: { ...S.toolText, color: C.err } }, block.error?.reason ?? block.error?.code ?? '调用失败')
+  }
+  if (raw === '') return h('div', { style: S.hint }, '没有返回内容。')
+  return h('pre', { style: S.toolRaw }, raw)
+}
+
+/**
+ * `memory_search` card: the query, whether it was answerable, and the matched
+ * memories instead of their JSON encoding.
+ */
+function MemorySearchCard({ phase, block }) {
+  const query = toolArg(block, 'query')
+  const scope = scopeLabel(block)
+
+  if (phase !== 'result') {
+    return h(ToolShell, { title: '记忆检索', tone: C.brand, meta: scope },
+      h('div', { style: S.toolText }, query || '（无查询）'),
+      h('div', { style: { ...S.hint, marginTop: '4px' } }, phase === 'preparing' ? '等待参数…' : '检索中…'))
+  }
+
+  const { value, raw } = toolResult(block)
+  if (block?.isError || value === null) {
+    return h(ToolShell, { title: '记忆检索', tone: block?.isError ? C.err : C.warn, meta: scope },
+      h('div', { style: S.toolText }, query || '（无查询）'),
+      renderRaw(block, raw))
+  }
+
+  const results = Array.isArray(value.results) ? value.results.filter((row) => row && typeof row === 'object') : []
+  const answerable = value.answerable !== false
+  const shown = results.slice(0, 5)
+  const hidden = results.length - shown.length
+  const note = typeof value.note === 'string' ? value.note : ''
+
+  return h(ToolShell, {
+    title: '记忆检索',
+    tone: answerable ? C.brand : C.warn,
+    meta: [scope, `${results.length} 条${answerable ? '' : ' · 不可直接回答'}`].filter(Boolean).join(' · '),
+  },
+    h('div', { style: S.toolText }, query || '（无查询）'),
+    results.length === 0
+      ? h('div', { style: { ...S.hint, marginTop: '4px' } }, note || '这个作用域里没有命中。')
+      : shown.map((row, index) => h('div', { key: row.id ?? index, style: S.toolRow },
+          h('span', { style: { ...S.mono, color: C.muted, flex: '0 0 auto' } }, String(row.id ?? '').slice(0, 10)),
+          h('span', { style: S.toolText }, String(row.text ?? '')),
+          typeof row.score === 'number' ? h('span', { style: { ...S.hint, flex: '0 0 auto' } }, row.score.toFixed(3)) : null)),
+    hidden > 0 ? h('div', { style: { ...S.hint, marginTop: '4px' } }, `还有 ${hidden} 条未展开。`) : null,
+    note && results.length > 0 ? h('div', { style: { ...S.hint, marginTop: '4px' } }, note) : null)
+}
+
+/** `memory_add` card: the stored text and the id that came back. */
+function MemoryAddCard({ phase, block }) {
+  const text = toolArg(block, 'text')
+  const type = toolArg(block, 'type') || 'user'
+  const scope = scopeLabel(block)
+
+  if (phase !== 'result') {
+    return h(ToolShell, { title: '记住', tone: C.brand, meta: [type, scope].filter(Boolean).join(' · ') },
+      h('div', { style: S.toolText }, text || '（空）'),
+      h('div', { style: { ...S.hint, marginTop: '4px' } }, phase === 'preparing' ? '等待参数…' : '写入中…'))
+  }
+
+  const { value, raw } = toolResult(block)
+  if (block?.isError || value === null) {
+    return h(ToolShell, { title: '记住', tone: block?.isError ? C.err : C.warn, meta: scope },
+      h('div', { style: S.toolText }, text || '（空）'),
+      renderRaw(block, raw))
+  }
+
+  return h(ToolShell, {
+    title: '记住',
+    tone: C.ok,
+    meta: [type, scope, typeof value.id === 'string' ? value.id.slice(0, 12) : ''].filter(Boolean).join(' · '),
+  },
+    h('div', { style: S.toolText }, String(value.text ?? text ?? '')))
+}
+
+/** Wire tool name → card component. Keys must match the registered tool names. */
+const MEMORY_TOOL_VIEWS = {
+  memory_search: MemorySearchCard,
+  memory_add: MemoryAddCard,
+}
+
 /**
  * Client plugin body: register the panel into the conversation view ring and the
- * Plugins settings section. Registrations ride the slot service's effect
- * wrapper, so unloading the plugin removes both.
+ * Plugins settings section, plus one keyed card per memory tool.
  * @param ctx - client root context.
  */
 function apply(ctx) {
@@ -1533,6 +1706,17 @@ function apply(ctx) {
     order: 30,
     label: () => 'MemVault 记忆桥',
   }, MemoryPanel))
+
+  // Distinct views rather than the shared generic row, because a memory search's
+  // JSON is a wall of braces in the transcript. DSH 0.2.2 dispatches atomic tool
+  // views through this keyed slot by wire name; an unclaimed name keeps the
+  // generic card, so this is additive and cannot affect other tools.
+  for (const [key, component] of Object.entries(MEMORY_TOOL_VIEWS)) {
+    ctx.slots.inject('tool.call.toolview', () => ctx.slots.register({
+      name: 'tool.call.toolview',
+      key,
+    }, component))
+  }
 }
 
 module.exports = { name: NAME, inject: ['slots'], apply }

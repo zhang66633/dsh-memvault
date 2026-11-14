@@ -19,7 +19,6 @@ import { DEFAULT_STATE_PATH } from '../lib/extract.js'
 import {
   CONFIG_SPEC,
   MEMVAULT_DIR,
-  MEMVAULT_PYTHON,
   configDefaults,
   resolveConfig,
 } from '../lib/config.js'
@@ -45,8 +44,6 @@ const defaults = configDefaults()
     defaults.enabled === true && defaults.name === 'memvault:core' && defaults.order === 210
     && defaults.maxChars === 4000 && defaults.refreshMs === 30000 && defaults.panel.writes === true,
     JSON.stringify({ name: defaults.name, maxChars: defaults.maxChars }))
-  check('the spec default for dbPath is the env-aware one from blocks.js',
-    defaults.dbPath === DEFAULT_DB_PATH, String(defaults.dbPath))
   check('the spec defaults for scopes are the reader defaults',
     same(defaults.scopes, DEFAULT_SCOPES), JSON.stringify(defaults.scopes))
   check('the spec default for statePath is the storage path from extract.js',
@@ -54,10 +51,14 @@ const defaults = configDefaults()
   check('the extraction defaults come from the spec with the window policy',
     defaults.extract.everyNTurns === 3 && defaults.extract.idleMs === 20000
     && defaults.extract.windowTurns === 8 && defaults.extract.endReasons.join(',') === 'completed,max-tokens'
-    && defaults.extract.env.PYTHONUTF8 === '1',
+    && same(defaults.extract.env, {}),
     JSON.stringify({ ...defaults.extract, env: undefined }))
-  check('the portability defaults are the env-aware paths',
-    defaults.extract.pythonPath === MEMVAULT_PYTHON && defaults.extract.projectDir === MEMVAULT_DIR)
+  check('the portability default for projectDir is the discovered .env directory',
+    defaults.extract.projectDir === MEMVAULT_DIR, String(defaults.extract.projectDir))
+  check('the Python-era keys are gone from the spec',
+    !Object.hasOwn(CONFIG_SPEC, 'dbPath') && !Object.hasOwn(CONFIG_SPEC.extract.fields, 'pythonPath')
+    && !Object.hasOwn(CONFIG_SPEC.extract.fields, 'user') && !Object.hasOwn(CONFIG_SPEC.extract.fields, 'agent')
+    && !Object.hasOwn(CONFIG_SPEC.extract.fields, 'run'))
 
   check('DEFAULT_EXTRACT is exactly the spec default (no second copy)',
     same(DEFAULT_EXTRACT, defaults.extract))
@@ -137,9 +138,9 @@ const defaults = configDefaults()
     same(env.config.extract.env, { PYTHONUTF8: '1' }) && env.problems.some((p) => p.includes('extract.env.BAD')),
     env.problems.join('; '))
 
-  const nullable = resolveConfig({ extract: { run: null } })
-  check('null means "not set", so the default stands (empty run omits the flag)',
-    nullable.config.extract.run === '' && same(nullable.config, defaults))
+  const nullable = resolveConfig({ extract: { minTranscriptChars: null } })
+  check('null means "not set", so the default stands',
+    nullable.config.extract.minTranscriptChars === defaults.extract.minTranscriptChars && same(nullable.config, defaults))
 
   const reasons = resolveConfig({ extract: { endReasons: ['completed'] } })
   check('an array field is replaced wholesale', same(reasons.config.extract.endReasons, ['completed']))
@@ -147,7 +148,6 @@ const defaults = configDefaults()
   // The shape the shipped patch actually uses — keeping this green is what stops
   // the patch and the spec from drifting apart.
   const patchShaped = {
-    dbPath: 'D:/Claude_code/memory/data/memvault.db',
     scopes: [{ type: 'user', id: 'lenovo' }, { type: 'agent', id: 'claude-code-memory' }],
     labels: [],
     maxChars: 4000,
@@ -162,11 +162,9 @@ const defaults = configDefaults()
       includeTools: false,
       maxInputChars: 6000,
       minTranscriptChars: 40,
-      timeoutMs: 120000,
-      pythonPath: 'D:/Claude_code/memory/.venv/Scripts/python.exe',
+      timeoutMs: 60000,
       projectDir: 'D:/Claude_code/memory',
-      user: 'lenovo',
-      agent: 'claude-code-memory',
+      env: {},
     },
   }
   const fromPatch = resolveConfig(patchShaped)

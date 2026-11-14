@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.9.12-4a6cf7">
+  <img alt="version" src="https://img.shields.io/badge/version-0.10.0-4a6cf7">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-30a46c">
   <img alt="runtime deps" src="https://img.shields.io/badge/runtime%20deps-zero-888">
   <img alt="node" src="https://img.shields.io/badge/node-%E2%89%A522.13-339933">
@@ -40,6 +40,7 @@ MCP 只能拉不能推，所以「记忆已经加载好」不可能靠服务端�
 | 🔎 **混合召回** | 子串（trigram）+ 转述（向量）融合 |
 | 🛠️ **两个工具** | 按 `user_id` / `agent_id` / `run_id` 限定 |
 | 🎛️ **真面板** | 诊断、向量回填、出处、关系图 |
+| 🃏 **原生工具卡片** | `memory_search` / `memory_add` 在会话里有自己的卡片 |
 | 🪶 **零依赖** | `node:sqlite` + 手写客户端 bundle |
 
 ## 🚀 安装
@@ -57,11 +58,14 @@ dsh plugin --profile desktop add dsh-memvault
 | `scopes` | `[{user,lenovo},{agent,claude-code-memory}]` |
 | `labels` / `maxChars` / `refreshMs` | `[]` / `4000` / `30000` |
 | `extract.everyNTurns` / `idleMs` / `windowTurns` | `3` / `20000` / `8` |
+| `extract.timeoutMs` | `60000`（作为 `MEMVAULT_EXTRACT_TIMEOUT_MS` 生效） |
 | `extract.minTranscriptChars` / `maxInputChars` | `40` / `6000` |
-| `extract.projectDir` / `env` | 仓库路径 / `{}`（`.env` 从哪读） |
+| `extract.projectDir` / `env` | 自动发现的 `.env` 目录 / `{}` |
 | `panel.writes` | `true` |
 
-`dbPath` 与 `extract.pythonPath` 仍被接受但不再使用。管线读的还是那套 `.env`（`OPENAI_*`、`MEMVAULT_EXTRACTOR=rule|llm`、`MEMVAULT_EMBEDDER=local|openai`、`MEMVAULT_ADJUDICATOR=off`）。
+库路径不由本插件配置（`~/.dsh/memvault/memvault.db`，或 `DSH_MEMVAULT_CORE_DB`）。`projectDir` 只决定 `.env` 从哪读——不 spawn 任何进程，所以没有 Python 仓库的机器照样能用，面板会列出它查过哪些目录。管线读的还是那套 `.env`（`OPENAI_*`、`MEMVAULT_EXTRACTOR=rule|llm`、`MEMVAULT_EMBEDDER=local|openai`、`MEMVAULT_ADJUDICATOR=off`）。
+
+旧的 `dbPath`、`extract.pythonPath`、`extract.user/agent/run` 已删除：留着它们的旧配置会在面板里显示为「未声明的键（已忽略）」，而不是悄悄不生效。写入作用域改为从 `scopes` 推导（第一个 user → `user_id`，第一个 agent → `agent_id`）。
 
 ## 🗄️ 存储与迁移
 
@@ -85,7 +89,7 @@ flowchart LR
 
 ## 🧪 验证
 
-`npm test`（6 smoke + 48 单测）。运行中：`/memvault/api/status` 看最近五次结果（`[rule]|[llm] ok added=N`）；`POST /memvault/api/replay` 受控重放；`memory_search` 验召回。
+`npm test`（6 smoke + 56 单测）。运行中：`/memvault/api/status` 看最近五次结果（`[rule]|[llm] ok added=N`）；`POST /memvault/api/replay` 受控重放；`memory_search` 验召回。
 
 ## 🧠 取舍
 

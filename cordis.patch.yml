@@ -1,31 +1,31 @@
 # dsh-memvault bundle patch。
 #
 # 只插一行 host 插件：它向 `ctx.systemPrompt` 注册一个**动态 runtime 上下文**贡献
-# （`memvault:core`），把 MemVault 的核心记忆块注入 system prompt。
+# （`memvault:core`），把 MemVault 的核心记忆块注入 system prompt，并提供
+# `memory_search` / `memory_add` 工具、按轮抽取与面板。
 #
-# 为什么不用 MCP：MemVault 是 stdio MCP server，MCP 是 pull 协议——服务端无法把任何
-# 东西塞进模型上下文，只能被调用。注入必须由客户端做，也就是这里。
+# 为什么不用 MCP：MCP 是 pull 协议——服务端无法把任何东西塞进模型上下文，只能被调用。
+# 注入必须由客户端做，也就是这里。
 #
-# 注意：这里**不**注册 MCP 客户端行。MemVault 的 MCP 工具已由 dsh-mcp-connector 以
-# stdio 方式接入；此处再插一行会造成 serverName 重复，让后加载者失败
+# 注意：这里**不**注册 MCP 客户端行。MemVault 的 MCP 工具若还要用，由 dsh-mcp-connector
+# 以 stdio 方式接入；此处再插一行会造成 serverName 重复，让后加载者失败
 # （dsh-project-hub 的 patch 里记过同样的坑）。
 #
 # 下面每一个字段都在 `lib/config.js` 里只描述一次：代码默认值、DSH 用来校验的
 # `Config` schema、Plugins 页的设置项都由那一份 spec 产出。写错键名或类型时，
 # 插件会照常跑（用默认值）并把问题显示在面板上。
 #
-# ⚠️ 本文件里的路径（dbPath / pythonPath / projectDir）是**作者本机的布局示例**，不是通用
-# 默认值。装到别的机器上有两条路：① 什么都不改——插件会**自动发现** MemVault（先看
-# `MEMVAULT_DIR` / `MEMVAULT_PYTHON`，再看若干常见位置，都没找到就在面板上如实报告
-# “未找到”并列出试过哪些目录）；② 或者把下面这几个值改成你自己的路径。
-# 面板的「位置与初始化」会显示当前生效的值、它是怎么定下来的，以及逐项自检结果。
+# ⚠️ Python 引擎已退役（DEVLOG §34）：没有子进程、没有 pythonPath、也没有 `dbPath`。
+# 库固定是插件自己的 `~/.dsh/memvault/memvault.db`（`DSH_MEMVAULT_CORE_DB` 可覆盖），
+# `projectDir` 只用来找那份 `.env`（嵌入端点、抽取器、模型覆盖），留空则自动发现。
+# 装到别的机器上可以什么都不改：找不到 `.env` 时嵌入退回离线哈希、抽取退回规则，
+# 面板的「位置与初始化」会逐项报告它找到了什么、试过哪些目录。
 - insert:
     - id: memvault-core-context
       name: 'dsh-memvault'
       config:
-        # MemVault 的库文件（与项目 .env 的 MEMVAULT_DB_PATH 一致）
-        dbPath: 'D:/Claude_code/memory/data/memvault.db'
-        # 核心块按 (scope_type, scope_id) 键控，必须显式给出两边
+        # 核心块按 (scope_type, scope_id) 键控，必须显式给出两边；
+        # 这两项同时就是写入作用域（第一个 user → user_id，第一个 agent → agent_id）。
         scopes:
           - { type: user, id: lenovo }
           - { type: agent, id: claude-code-memory }
@@ -33,12 +33,11 @@
         labels: []
         maxChars: 4000
         refreshMs: 30000
-        # 面板（浏览器半边）：writes=false 时面板只读，写核心块的路由回 403。
+        # 面板（浏览器半边）：writes=false 时面板只读，写核心块/复核/重抽的路由回 403。
         panel:
           writes: true
         # 写入端：攒够 N 轮后，等会话安静下来（idleMs）或窗口满（windowTurns）再把整窗
-        # 对话交给 MemVault（它自己做 LLM 抽取 + 向量化）——一次调用覆盖多轮，
-        # 比每轮一次更省、信噪比更高。一次 = 一个 Python 进程 + 一次真实 LLM 调用。
+        # 对话交给抽取器——一次调用覆盖多轮，比每轮一次更省、信噪比更高。
         extract:
           enabled: true
           # 至少攒够几轮才考虑抽取
@@ -52,8 +51,7 @@
           includeTools: false
           maxInputChars: 6000
           minTranscriptChars: 40
-          timeoutMs: 120000
-          pythonPath: 'D:/Claude_code/memory/.venv/Scripts/python.exe'
+          # 一次抽取模型请求的期限（环境里的 MEMVAULT_EXTRACT_TIMEOUT_MS 仍可覆盖）
+          timeoutMs: 60000
+          # 含 .env 的目录；留空 = 自动发现（先看 MEMVAULT_DIR，再看库目录与常见位置）
           projectDir: 'D:/Claude_code/memory'
-          user: lenovo
-          agent: claude-code-memory
