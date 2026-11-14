@@ -2,7 +2,9 @@
 
 > 目标：Python 引擎退役后，插件自带**存储、抽取、检索**三件事，装一个插件即完整功能。
 > 旧库 `data/memvault.db` 导出成 JSON 后归档，新库按本文结构重建。
-> 状态：**M0–M2 检索 + 工具定义已实现**（`lib/core/`，测试 `test/core*.test.mjs`）；工具接线与面板待做。
+> 状态：**M0–M3 检索 + 工具定义已实现**（`lib/core/`，测试 `test/core*.test.mjs`）；M4 对齐 DSH 0.2.2（见 DEVLOG §46）。
+> 注入层的两条硬约束记在这里：注入文本是记忆内容，注册时必须 `interpolate: false`（否则记忆里的 `{{…}}`
+> 会让 `assemble()` 抛错、整次请求失败）且 `required: true`（长时记忆不被 `suppressRuntimeContext()` 静默丢弃）。
 
 ## 1. 约束（本机实测，不是假设）
 
@@ -252,6 +254,7 @@ flowchart LR
 | **M1** | 抽取（HTTP）+ 结构化决策 + supersede | 旧库同款用例：改写判 update、冲突判 supersede | ✅ |
 | **M2** | 检索（FTS+向量+RRF+守卫）+ MCP 工具 + 面板读新库 | 评测集上 recall/negative 不劣于旧引擎 | ✅（工具真机验证；469 条真实数据回填向量后检索质量恢复） |
 | **M3** | 退役 Python 路径；迁移文档收尾 | 插件不再 spawn Python | ✅（`cli.js` / `reindex.js` / 旧读取器已删除；面板与抽取同库） |
+| **M4** | 对齐 DSH 0.2.2：注入安全（`interpolate:false` / `required`）、工具卡片（`tool.call.toolview`）、展示元数据（locale/icon/detail）、`session/disposed` 抽取、配置真值化 | `npm test` 全绿；面板不再显示未被读取的键 | ✅（0.10.0，见 DEVLOG §46） |
 
 遗留取舍（不是遗漏）：Python 的 retype 启发式未移植，新写入的类型由抽取器决定；
 导入的旧行仍带 `metadata.retyped_from`，面板照常列出。

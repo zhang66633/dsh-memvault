@@ -1398,3 +1398,117 @@ replay 里缺失的信息。
 
 测试 8 条（解析、超时/垃圾回答、含糊时问、判 false 清空结果、守卫优先、双通道跳过、工具透传、
 配置开关），全量 56 条通过。
+
+---
+
+## 46. 0.10.0：对齐 DSH 0.2.2 —— 注入安全、工具卡片、展示元数据
+
+上一版收口在 0.9.12 / DSH 0.2.1。宿主升到 **0.2.2-rc.3** 之后，先把「这版新增了什么」按源码核了一遍，
+再回头审这插件：结论是**有两个会真出事的问题、一批在撒谎的配置、以及三块从没用上的新面**。
+
+### 46.1 先核 DSH 0.2.2 新增了什么（可用的）
+
+| 新面 | 在哪 | 对本插件意味着什么 |
+|---|---|---|
+| `systemPrompt.context({ interpolate, required })` | `dsh-system-prompt/lib/index.js`（`resolveContext`、`assemble` 的过滤） | 注入文本是**记忆内容**，必须关掉变量插值；`required` 决定它能否被 `suppressRuntimeContext()` 静默丢掉 |
+| `tool.call.toolview`（keyed by 线缆工具名）+ Client-derived presentation | `dsh-client-ui-tool/src/client/contract/slots.ts`、README「Registering a business tool view」 | 第三方工具的卡片现在由**客户端**按工具名分发；`run_code`/`presentCall/presentResult` 不再进客户端 |
+| Plugins 页读 `meta.title` / `meta.description` / `meta.detail` 与 `./icon` | `dsh-plugin-manager`（`readBundleDetail`）、`dsh-doc` 的 `host-plugin.md` | 插件有了正经的标题、说明、详情页与图标，不再靠包名和英文 description 兜底 |
+| `session/disposed` | Host Event 目录 | 「会话结束」的准确时刻；此前只能等 idle 计时器或重启恢复 |
+| `chat` 的 `context` 类别、`conversation.chat.node` 的 `context` 键 | 升级指南 v0.2.2-alpha.3 / slots 目录 | 注入本身在会话里已有可见类别，不需要我们再加 UI |
+
+升级指南里其余条目（schedule、forge、CUA、web-search、subagent 命名等）与本插件无关，逐条核过。
+
+### 46.2 真问题一：记忆里的 `{{…}}` 能让整次请求失败
+
+`systemPrompt.context()` 默认对文本做提示词变量插值，而插值器**遇到未知/畸形变量直接抛错**
+（`interpolate()`：`unknown prompt variable "{{name}}" in context "memvault:core"`）。我们的注入文本
+是用户记忆：代码片段、模板、Handlebars 都可能有 `{{`。于是一条记忆就能让 `assemble()` 失败——
+不是「注入丢了」，是**这一轮模型请求根本发不出去**，而且报错指向提示词变量，与记忆毫无字面关联。
+
+修法两行：`interpolate: false`（原样保留文本）+ `required: true`（长时记忆不该被
+`includeRuntimeContext: false` 或 `suppressRuntimeContext()` 静默抹掉；要关注入用插件自己的 `enabled`）。
+回归断言进 `smoke-panel`：`contexts[0].interpolate === false && required === true`。
+
+### 46.3 真问题二：关掉抽取，工具也一起没了
+
+`apply()` 里 `if (!extract.enabled) return` 在 `attachMemoryTools()` **之前**。结果是
+`extract.enabled: false`（宣称为「只读」）把 `memory_search` / `memory_add` 一并注销——
+只读安装失去了唯一的模型侧检索入口，而且没有任何提示。工具和窗口抽取本来就是两件事：
+它们读写同一个库，与「要不要自动抽取」无关。
+
+修法：把工具接线移到早退之前。同时把 `replay` 路由也按 `panel.writes && extract.enabled` 收口——
+关掉抽取时它引用的 `enqueue`/`extractTranscript` 在早退之后根本不存在，访问会抛 `ReferenceError`
+（顺带发现的老坑，面板会回 500 而不是给理由）。`panel.writes:false` 时的错误文案改为
+「needs the write half」，覆盖两种关闭原因。
+
+### 46.4 真问题三：配置在撒谎（Python 时代的遗留）
+
+审计原则很简单：**每个配置键在代码里必须至少被读一次**。逐个核对后：
+
+| 键 | 实际 | 处理 |
+|---|---|---|
+| `dbPath` | 从未读取（真库是 `~/.dsh/memvault/memvault.db`） | 删除 |
+| `extract.pythonPath` / `MEMVAULT_PYTHON` | 只用于面板显示；M3 之后不再 spawn 任何进程 | 删除 |
+| `extract.user` / `agent` / `run` | 只用于面板显示；写入作用域其实从 `scopes` 推导 | 删除，面板改写「写入作用域（由 scopes 推导）」 |
+| `extract.timeoutMs` | 只用于面板显示；真实超时是 `MEMVAULT_EXTRACT_TIMEOUT_MS`（默认 60 s） | **接上**：默认 60000，合并进 pipeline env，显式 env 仍优先 |
+
+更糟的是**发现逻辑**：`discoverMemVault` 要求候选目录同时有 `memvault/__init__.py` 和 venv 解释器才
+「找到」。没有 Python 的机器上，明明 `.env` 就在那里，也会被判为未找到，于是嵌入悄悄退回离线哈希。
+现在判定条件换成「**这个目录里有 `.env` 吗**」——这是运行时唯一还会读的东西；候选顺序加入库目录
+`~/.dsh/memvault`（pipeline 本来就会在库旁找 `.env`），找不到时 `projectDir` 保持空而不是猜一个，
+面板列出自检过的目录。`checkPaths` 去掉 python 项，「目录存在但没有 `.env`」是有解释的正常态而非 ✗。
+
+### 46.5 展示元数据：终于像个插件
+
+按 `dsh-doc` 的 `host-plugin.md` / `plugin-details.md` 补齐：
+
+- `locale/en.json` + `locale/zh.json`：标题、说明（能力、用法、代价、关掉会怎样）、`meta.detail`；
+- `docs/DETAIL.md`（英文）/ `docs/DETAIL.zh.md`（中文）：各一行图片，替代文本各自本地化；
+  文件名遵循 DSH 的 locale 约定（英文是 `DETAIL.md`，其它语言带后缀）。
+- `docs/preview.svg`：640×300、无文字、透明底、浅深主题都可读；
+- `icon.svg`：36×36、纯几何、无 `<style>`/`<text>`/脚本；
+- `package.json`：`exports` 增 `./locale/*.json` 与 `./icon`，`files` 增 `locale`、`icon.svg`。
+
+这些是**非代码**的资源，坏了只会静默回退到默认图/包名，所以 `smoke-package` 增加一组断言：
+locale 可解析、`meta.detail` 指向的文件存在、详情文档正好一行图片、图片存在且是自包含 SVG、
+图标 36 单位且 ≤256 KiB。
+
+### 46.6 工具卡片：让检索结果不再是一堵 JSON
+
+DSH 0.2.2 把工具卡片交给客户端按工具名分发（`tool.call.toolview`）。注册两个 keyed view：
+`memory_search` 显示查询、作用域、命中条数与最多 5 条结果（带分数）；`memory_add` 显示存入文本、
+类型、作用域与返回 id。**所有读取都是全函数**：`args` 可能还在流式、`content` 可能不是 JSON、
+结果可能失败——任一情况都退回原文（`renderRaw`），卡片永远不会成为工具渲染出错的原因。
+
+测试方式：卡片是纯渲染函数（不用 hook），`smoke-panel` 的 React stub 足以执行它们，
+断言真实内容（查询、命中文本、分数、id、失败原因、非 JSON 回退）出现在输出树里。
+
+### 46.7 `session/disposed`：会话结束就把窗口交出去
+
+idle 计时器只在进程活着时生效，重启恢复只覆盖已持久化的窗口；一个刚攒到 `everyNTurns` 就被归档的
+会话，此前要等一个永远不会来的安静期。现在在 `session/disposed` 时 `flushNow(sessionId)`——
+但**只在窗口达到同一阈值时**：1–2 轮的窗口正是设计里明确不抽的低信号窗口，而关机会 dispose 所有会话。
+
+端到端验证（独立 mount + 独立库）：3 轮 → 关闭 → 诊断出现 `[rule] ok added=3` 且窗口清空；
+1 轮 → 关闭 → 什么都不发生，窗口仍在。
+
+### 46.8 清单与验证
+
+- 过时的 peer `@deepseek-ai/dsh-client-ui-slots`（0.2.2 已无此包）删除；`engines.dsh` 收窄到
+  `>=0.2.1-0 <0.3.0-0`——0.1.x 没有 `ctx.inject`/`slots`/`webServer`，声称支持是空头承诺。
+- 测试：`npm test` 全绿，**355 条 [PASS] 断言 + 56 条单测**；新增覆盖见 46.2–46.7 各节。
+- 真机状态：`/memvault/api/status` 仍由**旧代码**回答（抽取块里还有 `user/agent/run/pythonPath`），
+  说明 host 半边改动要**重启 DSH**；客户端 bundle 也要重启后才会加载新卡片。
+  重启后应看到：`writeScope` 字段出现、`configIssues.unknown` 为空（补丁已同步删键）、
+  四个路径自检项、`memory_search`/`memory_add` 卡片、Plugins 页的标题/图标/详情页。
+- 未验证（明确记录）：重启后的卡片视觉与图标渲染、Plugins 页 locale 生效情况。没有浏览器控制
+  桌面应用时，这两项只能靠源码契约 + 静态断言，不能声称「看到了」。
+
+### 46.9 这轮刻意不做
+
+- **面板文案接客户端 locale 服务**：面板是中文为主的个人工具，接 `dsh-client-locale` 要新增
+  locale 命名空间、给每个 slot 注册带 `locale`，收益不抵改动面；已记录，等真正对外发布再做。
+- **状态文件迁到 `ctx.storage`/`storage-domain`**：状态是可手工检查的 JSON（这也是它的价值），
+  迁移会把「出问题能直接看文件」这个属性丢掉。
+- **10 条精确路由合并成一条 prefix 路由**：`webServer` 支持 `kind: 'prefix'`，但每条路由的
+  方法/守卫/状态码各不相同，合并只会把 10 个处理器塞进一个 switch。
