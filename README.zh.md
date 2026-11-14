@@ -51,6 +51,8 @@ dsh plugin --profile desktop add dsh-memvault
 
 自持安装是在 profile 的 `package.json` 里写 `dsh-memvault: link:…` 加一个 `node_modules` 目录联接（见 `docs/DEVLOG.md`）。新增 bundle 要**重启 DSH**；改过客户端后跑 `npm run build`。
 
+要求 DSH **0.2.1+**，实测目标是 **0.2.2-rc.3**。`engines.dsh` 里显式写了 0.2.2 那一段：裸的 `>=0.2.1-0 <0.3.0-0` 在**不带 `includePrerelease`** 的严格判定下不匹配 `0.2.2-rc.3`，而 npm/pnpm 的 peer 解析与插件市场的预检都是严格模式。工具卡片、不插值的注入、会话结束抽取是 0.2.2 的能力；在 0.2.1 上会退回旧行为。
+
 ## ⚙️ 配置
 
 | 字段 | 默认值 |

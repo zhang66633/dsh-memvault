@@ -51,6 +51,8 @@ dsh plugin --profile desktop add dsh-memvault
 
 Self-owned install links a checkout in the profile's `package.json` (`dsh-memvault: link:…`) plus a junction under `node_modules` — see `docs/DEVLOG.md`. A new bundle needs a **DSH restart**; after editing the client run `npm run build`.
 
+Requires DSH **0.2.1+**, verified against **0.2.2-rc.3** (`engines.dsh` names the 0.2.2 line explicitly, because a bare `>=0.2.1-0 <0.3.0-0` does not admit `0.2.2-rc.3` for strict semver readers). The tool cards, the non-interpolated injection and the session-close extraction are 0.2.2 features; on 0.2.1 they degrade to the previous behaviour.
+
 ## ⚙️ Configuration
 
 | Field | Default |

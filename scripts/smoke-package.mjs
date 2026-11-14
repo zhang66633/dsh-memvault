@@ -17,13 +17,14 @@
  *     checked, and a missing declaration imposes no constraint at all — so the
  *     declarations that exist are checked for the right package family.
  *   - `engines.dsh` decides alone when present, so it must agree with every DSH
- *     peer, and the range must cover the 0.2.1 prerelease line even for readers
- *     that do not pass `includePrerelease`.
+ *     peer, and the range must cover both the 0.2.1 and the 0.2.2 prerelease lines
+ *     for readers that do not pass `includePrerelease`.
  *   - `files[]` names real paths, otherwise a published tarball silently lacks
  *     the patch or the docs.
  */
 import { readFileSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { createRequire } from 'node:module'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -32,6 +33,9 @@ const failures = []
 function check(label, ok, detail = '') {
   console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${label}${detail ? ` -- ${detail}` : ''}`)
   if (!ok) failures.push(label)
+}
+function skip(label, reason) {
+  console.log(`  [SKIP] ${label} -- ${reason}`)
 }
 
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -123,6 +127,31 @@ check('engines.dsh covers the 0.2.1 prerelease line for strict matchers',
 check('every DSH peer declares the same host range as engines.dsh',
   dshPeers.length > 0 && dshPeers.every(([, range]) => range === DSH_RANGE),
   dshPeers.map(([name]) => name).join(', '))
+
+// The range is a promise about which host builds may run this plugin. A bare
+// `>=0.2.1-0 <0.3.0-0` does NOT match `0.2.2-rc.3` when `includePrerelease` is
+// off — semver only admits a prerelease through a comparator on its own
+// major.minor.patch tuple — and npm/pnpm peer resolution plus dsh-market's
+// discovery preflight are strict. So the 0.2.2 arm is what makes the declaration
+// true for a 0.2.2 host; verify it with the same semver the runtime ships.
+{
+  const probe = createRequire(join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'profiles', 'node_modules') + '/')
+  let semver = null
+  try { semver = probe('semver') } catch { semver = null }
+  if (semver === null) {
+    skip('the declared host range matches 0.2.2 prereleases under strict semver',
+      'no semver under the profile node_modules')
+  } else {
+    const must = ['0.2.1', '0.2.1-rc.3', '0.2.2-rc.1', '0.2.2-rc.3', '0.2.2', '0.2.3']
+    const mustNot = ['0.1.9', '0.3.0-rc.1', '1.0.0']
+    const strictOk = must.every((v) => semver.satisfies(v, DSH_RANGE))
+      && mustNot.every((v) => !semver.satisfies(v, DSH_RANGE))
+    check('the declared host range matches 0.2.2 prereleases under strict semver',
+      strictOk, `${must.filter((v) => !semver.satisfies(v, DSH_RANGE)).join(', ')} rejected`)
+    check('the declared host range still rejects 0.3 prereleases with includePrerelease',
+      !semver.satisfies('0.3.0-rc.1', DSH_RANGE, { includePrerelease: true }))
+  }
+}
 
 // ── the browser half ────────────────────────────────────────────────────────
 // `dsh.client` is parsed by @deepseek-ai/dsh-client-modules, which reads
