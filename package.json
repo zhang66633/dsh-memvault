@@ -1,6 +1,6 @@
 {
   "name": "dsh-memvault",
-  "version": "0.9.12",
+  "version": "0.10.0",
   "description": "DeepSeek Harness plugin: inject MemVault core memory blocks into the system prompt, extract finished turns as one windowed pass, and show, edit, trace, review and replay all of it in a memory panel",
   "type": "module",
   "main": "lib/index.js",
@@ -11,6 +11,8 @@
     "./flags": "./lib/flags.js",
     "./panel": "./lib/panel.js",
     "./review": "./lib/review.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
@@ -18,6 +20,8 @@
     "src",
     "scripts",
     "docs",
+    "locale",
+    "icon.svg",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -29,7 +33,7 @@
     "smoke:config": "node scripts/smoke-config.mjs",
     "smoke:extract": "node scripts/smoke-extract.mjs",
     "smoke:panel": "node scripts/smoke-panel.mjs",
-  "smoke:panel-routes": "node scripts/smoke-panel-routes.mjs",
+    "smoke:panel-routes": "node scripts/smoke-panel-routes.mjs",
     "smoke:package": "node scripts/smoke-package.mjs",
     "test:core": "node --test \"test/**/*.test.mjs\"",
     "test": "node scripts/smoke-package.mjs && node scripts/smoke-config.mjs && node scripts/smoke.mjs && node scripts/smoke-extract.mjs && node scripts/smoke-panel.mjs && node scripts/smoke-panel-routes.mjs && node --test \"test/**/*.test.mjs\""
@@ -55,7 +59,7 @@
   ],
   "engines": {
     "node": ">=22.13",
-    "dsh": ">=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-0 <0.3.0-0"
+    "dsh": ">=0.2.1-0 <0.3.0-0"
   },
   "dsh": {
     "manifestVersion": 1,
@@ -67,8 +71,7 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-0 <0.3.0-0",
-    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-0 <0.3.0-0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.2.1-0 <0.3.0-0",
     "@deepseek-ai/schemastery": "^3.18.0"
   },
   "license": "MIT"

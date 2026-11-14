@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "MemVault 记忆桥",
+    "description": "把 MemVault 的核心记忆块注入 system prompt，把收尾后的整窗对话抽取成记忆，并提供可浏览、复核、重抽的记忆面板；同时注册 memory_search 与 memory_add 两个工具，读写同一个本地 SQLite 库。数据全部在本机：MemVault 的 .env 里没有 key 时，抽取走离线规则、嵌入走离线哈希。关闭本插件会同时移除注入、两个工具与面板。",
+    "detail": "docs/DETAIL.zh.md"
+  }
+}

@@ -44,7 +44,11 @@ check('type is module (the plugin is plain ESM)', pkg.type === 'module')
 check('main points at a real file', existsSync(join(root, pkg.main ?? '')), pkg.main)
 check('every exports target exists',
   Object.values(pkg.exports ?? {}).filter((v) => typeof v === 'string' && v.startsWith('.'))
-    .every((v) => existsSync(join(root, v)) || v === './package.json'))
+    // A wildcard export is a pattern, not a path: at least one file must match, or
+    // the locale/icon resource the Plugin Manager reads is silently absent.
+    .every((v) => v.includes('*')
+      ? existsSync(join(root, v.split('*')[0]))
+      : existsSync(join(root, v)) || v === './package.json'))
 check('declares no runtime dependencies (node: builtins only)',
   Object.keys(pkg.dependencies ?? {}).length === 0)
 check('every files[] entry exists', (pkg.files ?? []).every((f) => existsSync(join(root, f))),
@@ -169,7 +173,6 @@ check('the built bundle keeps the path map behind one toggle',
 // each for a stated reason; anything else fails here rather than on someone else's
 // machine:
 //   lib/config.js      the discovery *candidates* (searched, never assumed)
-//   lib/blocks.js      the documented fallback for a direct readCoreBlocks call
 //   cordis.patch.yml   the shipped example configuration, annotated as such
 //
 // The pattern requires a non-alphanumeric (or the start) before the letter: the first
@@ -179,7 +182,7 @@ check('the path guard does not mistake a URL scheme for a drive letter',
   !DRIVE_PATH.test('http://localhost') && !DRIVE_PATH.test('https://example.com/x')
   && DRIVE_PATH.test('D:/x') && DRIVE_PATH.test("'C:\\Users\\x'"))
 
-const ALLOWED_ABSOLUTE_PATH_FILES = ['lib/config.js', 'lib/blocks.js', 'cordis.patch.yml']
+const ALLOWED_ABSOLUTE_PATH_FILES = ['lib/config.js', 'cordis.patch.yml']
 const SOURCE_FILES = [
   'lib/config.js', 'lib/blocks.js', 'lib/index.js', 'lib/panel.js',
   'lib/structure.js', 'lib/extract.js', 'lib/window.js', 'lib/flags.js',
@@ -195,7 +198,7 @@ check('an absolute path appears only in the files allowed to carry one',
   const dir = mkdtempSync(join(tmpdir(), 'dsh-mv-env-'))
   writeFileSync(join(dir, '.env'), 'MEMVAULT_DB_PATH=data/x.db\nMEMVAULT_EMBEDDER=openai\nOPENAI_EMBEDDING_MODEL=qwen3-embedding-8b\n')
   const { checkPaths } = await import('../lib/index.js')
-  const options = { pythonPath: process.execPath, dbPath: join(dir, 'data', 'x.db'), statePath: join(dir, 'state.json') }
+  const options = { dbPath: join(dir, 'data', 'x.db'), statePath: join(dir, 'state.json') }
   const row = checkPaths({ ...options, projectDir: dir }).find((r) => r.key === 'serviceEmbedder')
   check('the service embedder is reported, with its model',
     Boolean(row) && row.detail.includes('openai') && row.detail.includes('qwen3-embedding-8b'),
@@ -208,6 +211,48 @@ check('an absolute path appears only in the files allowed to carry one',
 check('every allow-listed file still contains one (a stale entry would be a lie)',
   ALLOWED_ABSOLUTE_PATH_FILES.every((rel) => DRIVE_PATH.test(readFileSync(join(root, rel), 'utf8'))),
   ALLOWED_ABSOLUTE_PATH_FILES.join(', '))
+
+// ── display metadata (DSH reads locale JSON + ./icon without activating) ──────
+// The plugin manager shows `meta.title` / `meta.description` / `meta.detail` and the
+// exported icon on the Plugins page. None of it is code, so a typo or a missing file
+// is invisible until someone opens the page — hence a check here.
+{
+  check('exports the icon and the locale resources DSH reads',
+    pkg.exports?.['./icon'] === './icon.svg' && pkg.exports?.['./locale/*.json'] === './locale/*.json',
+    JSON.stringify({ icon: pkg.exports?.['./icon'], locale: pkg.exports?.['./locale/*.json'] }))
+
+  const icon = join(root, 'icon.svg')
+  const iconSvg = existsSync(icon) ? readFileSync(icon, 'utf8') : ''
+  check('the icon is a self-contained 36-unit SVG', /^<svg[\s>]/.test(iconSvg.trim())
+    && /width="36"/.test(iconSvg) && /height="36"/.test(iconSvg) && /viewBox="0 0 36 36"/.test(iconSvg)
+    && !/<script|<style|<image|<foreignObject/i.test(iconSvg),
+    `${Buffer.byteLength(iconSvg, 'utf8')} bytes`)
+  check('the icon stays inside the 256 KiB limit', Buffer.byteLength(iconSvg, 'utf8') <= 256 * 1024)
+
+  for (const locale of ['en', 'zh']) {
+    const file = join(root, 'locale', `${locale}.json`)
+    let meta = null
+    try { meta = JSON.parse(readFileSync(file, 'utf8'))?.meta ?? null } catch { meta = null }
+    check(`locale/${locale}.json carries a title, a description and a detail document`,
+      typeof meta?.title === 'string' && meta.title.trim() !== ''
+      && typeof meta?.description === 'string' && meta.description.trim().length > 40
+      && typeof meta?.detail === 'string' && meta.detail.endsWith('.md'),
+      JSON.stringify(meta))
+    // The page treats a declared-but-missing document as an error, not a fallback.
+    const doc = typeof meta?.detail === 'string' ? join(root, meta.detail) : ''
+    const docText = doc !== '' && existsSync(doc) ? readFileSync(doc, 'utf8') : null
+    check(`locale/${locale}.json names a detail document that exists`, docText !== null, meta?.detail ?? '—')
+    const imageLine = (docText ?? '').split('\n').map((line) => line.trim()).filter(Boolean)
+    check(`the ${locale} detail document is exactly one image line`,
+      imageLine.length === 1 && /^!\[[^\]]+\]\([^)]+\)$/.test(imageLine[0]), imageLine.join(' | '))
+    const imagePath = imageLine[0]?.match(/\(([^)]+)\)$/)?.[1] ?? ''
+    const image = imagePath === '' ? '' : join(doc, '..', imagePath)
+    check(`the ${locale} detail image exists and is a self-contained SVG`,
+      image !== '' && existsSync(image) && /^<svg[\s>]/.test(readFileSync(image, 'utf8').trim())
+      && !/<script|<image|<foreignObject/i.test(readFileSync(image, 'utf8')),
+      imagePath)
+  }
+}
 
 console.log(`\n${failures.length === 0 ? 'ALL PASS' : `FAILED: ${failures.join(', ')}`}`)
 process.exit(failures.length === 0 ? 0 : 1)

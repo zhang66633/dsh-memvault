@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300" fill="none">
+  <!-- Memory panel: the block list that is injected, one row selected. -->
+  <rect x="32" y="44" width="340" height="212" rx="16" fill="#94A3B8" fill-opacity="0.08" stroke="#94A3B8" stroke-opacity="0.55" stroke-width="1.5"/>
+  <rect x="52" y="60" width="78" height="16" rx="8" fill="#4D6BFE" fill-opacity="0.9"/>
+  <rect x="142" y="65" width="84" height="6" rx="3" fill="#94A3B8" fill-opacity="0.45"/>
+  <rect x="300" y="65" width="40" height="6" rx="3" fill="#94A3B8" fill-opacity="0.25"/>
+
+  <circle cx="58" cy="104" r="4" fill="#4D6BFE"/>
+  <rect x="72" y="100" width="176" height="8" rx="4" fill="#94A3B8" fill-opacity="0.4"/>
+  <rect x="300" y="100" width="40" height="8" rx="4" fill="#94A3B8" fill-opacity="0.22"/>
+
+  <rect x="52" y="120" width="300" height="28" rx="9" fill="#4D6BFE" fill-opacity="0.12" stroke="#4D6BFE" stroke-opacity="0.55" stroke-width="1.5"/>
+  <circle cx="68" cy="134" r="4" fill="#4D6BFE"/>
+  <rect x="82" y="130" width="150" height="8" rx="4" fill="#4D6BFE" fill-opacity="0.8"/>
+  <rect x="300" y="130" width="40" height="8" rx="4" fill="#4D6BFE" fill-opacity="0.35"/>
+
+  <circle cx="58" cy="170" r="4" fill="#94A3B8" fill-opacity="0.6"/>
+  <rect x="72" y="166" width="196" height="8" rx="4" fill="#94A3B8" fill-opacity="0.3"/>
+  <rect x="300" y="166" width="40" height="8" rx="4" fill="#94A3B8" fill-opacity="0.2"/>
+
+  <circle cx="58" cy="204" r="4" fill="#94A3B8" fill-opacity="0.4"/>
+  <rect x="72" y="200" width="132" height="8" rx="4" fill="#94A3B8" fill-opacity="0.24"/>
+
+  <path d="M52 232h300" stroke="#94A3B8" stroke-opacity="0.35" stroke-width="1.5"/>
+
+  <!-- Relation graph: memories as nodes, relations as weighted edges. -->
+  <g stroke="#94A3B8" stroke-opacity="0.55" stroke-width="2">
+    <path d="M470 96 548 116"/>
+    <path d="M470 96 516 170"/>
+    <path d="M548 116 516 170"/>
+    <path d="M516 170 452 190"/>
+    <path d="M516 170 566 206"/>
+    <path d="M452 190 492 230"/>
+  </g>
+  <circle cx="516" cy="170" r="9" fill="#4D6BFE"/>
+  <circle cx="470" cy="96" r="7" fill="#94A3B8" fill-opacity="0.75"/>
+  <circle cx="548" cy="116" r="7" fill="#94A3B8" fill-opacity="0.75"/>
+  <circle cx="452" cy="190" r="7" fill="#94A3B8" fill-opacity="0.75"/>
+  <circle cx="566" cy="206" r="7" fill="#94A3B8" fill-opacity="0.6"/>
+  <circle cx="492" cy="230" r="7" fill="#94A3B8" fill-opacity="0.6"/>
+</svg>
